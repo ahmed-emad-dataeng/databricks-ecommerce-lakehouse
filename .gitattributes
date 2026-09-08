@@ -1,0 +1,8 @@
+# Normalise to LF in the repository. These files are synced to a Linux-based
+# Databricks workspace, so committing CRLF would leak Windows line endings into
+# notebooks, YAML and SQL that run there.
+* text=auto eol=lf
+
+# Never touch data files.
+*.csv binary
+*.parquet binary

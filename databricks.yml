@@ -1,0 +1,46 @@
+# Declarative Automation Bundle (formerly "Databricks Asset Bundles").
+#
+# Deploy with:
+#   databricks bundle validate
+#   databricks bundle deploy --target dev
+#   databricks bundle run ecommerce_pipeline --target dev
+#
+# FREE EDITION NOTES
+#   * Serverless only. No `job_clusters` / `new_cluster` blocks anywhere -- a job
+#     that asks for classic compute is rejected outright.
+#   * Tasks are notebook_task on purpose. Notebooks run on serverless without an
+#     `environments:` block, whose schema has shifted between CLI versions
+#     (`client` vs `environment_version`). Fewer moving parts for the M0 spike.
+#     Switch to spark_python_task later if you want, but expect to pin that spec.
+#   * Max 5 concurrent job tasks per account, so the DAG stays linear.
+#   * `max_concurrent_runs: 1` -- two overlapping runs would race on the same
+#     Delta tables and make the idempotency fingerprint meaningless.
+
+bundle:
+  name: ecommerce-lakehouse
+
+variables:
+  catalog:
+    description: Unity Catalog to build into.
+    default: ecommerce
+  run_date:
+    description: Logical date the pipeline processes. Not wall-clock time.
+    default: "2018-10-01"
+
+include:
+  - resources/*.yml
+
+targets:
+  dev:
+    mode: development # prefixes resources with [dev <user>] and pauses schedules
+    default: true
+    variables:
+      catalog: ecommerce_dev
+
+  prod:
+    mode: production
+    variables:
+      catalog: ecommerce
+    # Free Edition has a single workspace, so dev and prod differ by catalog
+    # rather than by workspace. Called out because it is a real deviation from
+    # how this would be done on a paid account.

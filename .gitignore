@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Databricks
+.databricks/
+*.tfstate*
+
+# Data — never commit the Olist CSVs (licensed CC BY-NC-SA, and large)
+data/
+*.csv
+!tests/fixtures/*.csv
+
+# Local
+.env
+.DS_Store
+Thumbs.db
