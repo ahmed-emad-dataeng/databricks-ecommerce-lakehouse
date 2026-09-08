@@ -97,11 +97,25 @@ Licensed **CC BY-NC-SA 4.0** — non-commercial use, attribution required. The
 
 ## 3. Install the Databricks CLI
 
-Not currently installed on this machine. On Windows:
+**Already installed** — Databricks CLI v1.15.0, via:
 
 ```bash
-winget install Databricks.DatabricksCLI
+winget install Databricks.DatabricksCLI --exact --accept-package-agreements --accept-source-agreements
 ```
+
+winget added it to PATH, so `databricks` resolves once you restart your terminal
+(or the Claude Code app). Until then the binary is at:
+
+```
+%LOCALAPPDATA%\Microsoft\WinGet\Packages\Databricks.DatabricksCLI_Microsoft.Winget.Source_8wekyb3d8bbwe\databricks.exe
+```
+
+`bundle validate` already parses `databricks.yml` and the job resource without
+structural errors, so the config is sound before you authenticate. Deeper
+task-level validation only runs against a real workspace.
+
+Note the CLI calls these **Declarative Automation Bundles** — same
+`databricks bundle` commands, renamed docs.
 
 Then authenticate (creates a profile in `~/.databrickscfg`):
 
