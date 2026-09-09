@@ -6,10 +6,22 @@ rather than hardcoding nine near-identical code paths.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 # --- Catalog layout -------------------------------------------------------
-CATALOG = "ecommerce"
+# The catalog is resolved at CALL time from an environment variable, never
+# frozen at import time. The bundle passes a different catalog per target
+# (ecommerce_dev for dev, ecommerce for prod) and notebooks/_bootstrap.py
+# exports it before any src module runs.
+#
+# Freezing it in a module-level constant was a real bug: the job would receive
+# `ecommerce_dev` as a parameter, hand it to modules that ignored it, and write
+# everything to `ecommerce` instead -- a silent wrong-target failure rather than
+# an error.
+CATALOG_ENV_VAR = "ECOMMERCE_CATALOG"
+DEFAULT_CATALOG = "ecommerce"
+
 SCHEMA_LANDING = "landing"
 SCHEMA_BRONZE = "bronze"
 SCHEMA_SILVER = "silver"
@@ -17,13 +29,41 @@ SCHEMA_GOLD = "gold"
 SCHEMA_OPS = "ops"
 
 VOLUME = "raw"
-VOLUME_ROOT = f"/Volumes/{CATALOG}/{SCHEMA_LANDING}/{VOLUME}"
 
-PATH_OLIST = f"{VOLUME_ROOT}/olist"
-PATH_CDC = f"{VOLUME_ROOT}/cdc"
-PATH_EVENTS = f"{VOLUME_ROOT}/events"
-PATH_CHECKPOINTS = f"{VOLUME_ROOT}/_checkpoints"
-PATH_SCHEMAS = f"{VOLUME_ROOT}/_schemas"
+
+def catalog() -> str:
+    """Target catalog for this run. Env var wins; falls back to the default."""
+    return os.environ.get(CATALOG_ENV_VAR) or DEFAULT_CATALOG
+
+
+def set_catalog(name: str) -> None:
+    """Pin the catalog for this process. Called from the notebook bootstrap."""
+    os.environ[CATALOG_ENV_VAR] = name
+
+
+def volume_root() -> str:
+    return f"/Volumes/{catalog()}/{SCHEMA_LANDING}/{VOLUME}"
+
+
+def path_olist() -> str:
+    return f"{volume_root()}/olist"
+
+
+def path_cdc() -> str:
+    return f"{volume_root()}/cdc"
+
+
+def path_events() -> str:
+    return f"{volume_root()}/events"
+
+
+def path_checkpoints() -> str:
+    return f"{volume_root()}/_checkpoints"
+
+
+def path_schemas() -> str:
+    return f"{volume_root()}/_schemas"
+
 
 # Metadata columns stamped onto every bronze table.
 INGEST_TS = "_ingest_ts"
@@ -32,8 +72,8 @@ BATCH_ID = "_batch_id"
 
 
 def fqn(schema: str, table: str) -> str:
-    """Fully-qualified Unity Catalog name."""
-    return f"{CATALOG}.{schema}.{table}"
+    """Fully-qualified Unity Catalog name, resolved against the live catalog."""
+    return f"{catalog()}.{schema}.{table}"
 
 
 @dataclass(frozen=True)
@@ -58,7 +98,8 @@ class SourceTable:
 
     @property
     def source_glob(self) -> str:
-        return f"{PATH_OLIST}/{self.source_file}"
+        # Property, not a stored field, so it follows the live catalog.
+        return f"{path_olist()}/{self.source_file}"
 
 
 CORE_TABLES: tuple[SourceTable, ...] = (

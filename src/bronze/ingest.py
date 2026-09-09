@@ -26,14 +26,14 @@ from pyspark.sql import functions as F
 from src.config import (
     BATCH_ID,
     INGEST_TS,
-    PATH_CHECKPOINTS,
-    PATH_OLIST,
-    PATH_SCHEMAS,
     SCHEMA_BRONZE,
-    SOURCE_TABLES,
     SOURCE_FILE,
+    SOURCE_TABLES,
     SourceTable,
     fqn,
+    path_checkpoints,
+    path_olist,
+    path_schemas,
 )
 
 INGEST_MODE = "auto_loader"  # or "copy_into"
@@ -55,17 +55,19 @@ def ingest_auto_loader(spark: SparkSession, table: SourceTable, batch_id: str) -
     stream = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "csv")
-        .option("cloudFiles.schemaLocation", f"{PATH_SCHEMAS}/{table.name}")
+        .option("cloudFiles.schemaLocation", f"{path_schemas()}/{table.name}")
         .option("cloudFiles.inferColumnTypes", "false")  # bronze stays all-string
         .option("cloudFiles.schemaEvolutionMode", "rescue")
         .option("header", "true")
         .option("rescuedDataColumn", "_rescued_data")
-        .load(f"{PATH_OLIST}/{table.source_file}")
+        .load(f"{path_olist()}/{table.source_file}")
     )
 
     query = (
         _with_provenance(stream, batch_id)
-        .writeStream.option("checkpointLocation", f"{PATH_CHECKPOINTS}/bronze/{table.name}")
+        .writeStream.option(
+            "checkpointLocation", f"{path_checkpoints()}/bronze/{table.name}"
+        )
         .option("mergeSchema", "true")
         .trigger(availableNow=True)
         .toTable(target)
@@ -93,7 +95,7 @@ def ingest_copy_into(spark: SparkSession, table: SourceTable, batch_id: str) -> 
                  current_timestamp() AS {INGEST_TS},
                  _metadata.file_path AS {SOURCE_FILE},
                  '{batch_id}'        AS {BATCH_ID}
-          FROM '{PATH_OLIST}/{table.source_file}'
+          FROM '{path_olist()}/{table.source_file}'
         )
         FILEFORMAT = CSV
         FORMAT_OPTIONS ('header' = 'true', 'inferSchema' = 'false')

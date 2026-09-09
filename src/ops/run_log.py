@@ -15,48 +15,54 @@ from pyspark.sql import functions as F
 
 from src.config import SCHEMA_OPS, fqn
 
-RUNS_TABLE = fqn(SCHEMA_OPS, "pipeline_runs")
-DQ_TABLE = fqn(SCHEMA_OPS, "dq_results")
+def runs_table() -> str:
+    return fqn(SCHEMA_OPS, "pipeline_runs")
 
 
-DDL = {
-    RUNS_TABLE: f"""
-        CREATE TABLE IF NOT EXISTS {RUNS_TABLE} (
-          run_id            STRING  COMMENT 'Databricks job run id, or a local uuid',
-          task_name         STRING,
-          run_date          DATE    COMMENT 'Logical date the run processes, not wall clock',
-          started_at        TIMESTAMP,
-          ended_at          TIMESTAMP,
-          duration_seconds  DOUBLE,
-          status            STRING  COMMENT 'succeeded | failed',
-          rows_read         BIGINT,
-          rows_written      BIGINT,
-          rows_quarantined  BIGINT,
-          error_message     STRING,
-          details           MAP<STRING, STRING>
-        )
-        COMMENT 'One row per pipeline task execution. Grain: (run_id, task_name).'
-    """,
-    DQ_TABLE: f"""
-        CREATE TABLE IF NOT EXISTS {DQ_TABLE} (
-          run_id        STRING,
-          run_date      DATE,
-          table_name    STRING,
-          rule_id       STRING,
-          description   STRING,
-          severity      STRING,
-          rows_checked  BIGINT,
-          rows_failed   BIGINT,
-          failure_rate  DOUBLE,
-          evaluated_at  TIMESTAMP
-        )
-        COMMENT 'Per-run outcome of every data-quality rule. Grain: (run_id, table_name, rule_id).'
-    """,
-}
+def dq_table() -> str:
+    return fqn(SCHEMA_OPS, "dq_results")
+
+
+def _ddl() -> dict[str, str]:
+    """DDL built at call time so it targets the run's catalog, not the default."""
+    return {
+        runs_table(): f"""
+            CREATE TABLE IF NOT EXISTS {runs_table()} (
+              run_id            STRING  COMMENT 'Databricks job run id, or a local uuid',
+              task_name         STRING,
+              run_date          DATE    COMMENT 'Logical date the run processes, not wall clock',
+              started_at        TIMESTAMP,
+              ended_at          TIMESTAMP,
+              duration_seconds  DOUBLE,
+              status            STRING  COMMENT 'succeeded | failed',
+              rows_read         BIGINT,
+              rows_written      BIGINT,
+              rows_quarantined  BIGINT,
+              error_message     STRING,
+              details           MAP<STRING, STRING>
+            )
+            COMMENT 'One row per pipeline task execution. Grain: (run_id, task_name).'
+        """,
+        dq_table(): f"""
+            CREATE TABLE IF NOT EXISTS {dq_table()} (
+              run_id        STRING,
+              run_date      DATE,
+              table_name    STRING,
+              rule_id       STRING,
+              description   STRING,
+              severity      STRING,
+              rows_checked  BIGINT,
+              rows_failed   BIGINT,
+              failure_rate  DOUBLE,
+              evaluated_at  TIMESTAMP
+            )
+            COMMENT 'Per-run outcome of every data-quality rule. Grain: (run_id, table_name, rule_id).'
+        """,
+    }
 
 
 def ensure_tables(spark) -> None:
-    for ddl in DDL.values():
+    for ddl in _ddl().values():
         spark.sql(ddl)
 
 
@@ -117,7 +123,7 @@ def logged_task(spark, task_name: str, run_id: str, run_date: str):
             .withColumn("started_at", F.timestamp_seconds("started_at"))
             .withColumn("ended_at", F.timestamp_seconds("ended_at"))
             .write.mode("append")
-            .saveAsTable(RUNS_TABLE)
+            .saveAsTable(runs_table())
         )
 
 
@@ -164,4 +170,4 @@ def record_dq_results(
         "failure_rate double",
     ).withColumn("run_date", F.to_date("run_date")).withColumn(
         "evaluated_at", F.current_timestamp()
-    ).write.mode("append").saveAsTable(DQ_TABLE)
+    ).write.mode("append").saveAsTable(dq_table())

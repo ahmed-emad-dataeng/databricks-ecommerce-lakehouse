@@ -30,7 +30,8 @@ from src.config import (
 from src.gold import scd2
 from src.silver.transforms import compute_customer_segment
 
-DIM_CUSTOMER = fqn(SCHEMA_GOLD, "dim_customer")
+def dim_customer_table() -> str:
+    return fqn(SCHEMA_GOLD, "dim_customer")
 UNKNOWN = "unknown"
 
 
@@ -150,7 +151,7 @@ def create_dim_customer(spark: SparkSession) -> None:
     """DDL for the SCD2 dimension. Separate from the load so the schema is
     explicit and reviewable rather than inferred from whatever arrived first."""
     spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS {DIM_CUSTOMER} (
+        CREATE TABLE IF NOT EXISTS {dim_customer_table()} (
           customer_sk              BIGINT  COMMENT 'Surrogate key. One per VERSION, not per customer.',
           customer_unique_id       STRING  COMMENT 'Natural key: identifies the person across orders.',
           customer_city            STRING,
@@ -181,7 +182,7 @@ def seed_dim_customer(spark: SparkSession, as_of: str) -> int:
     this is a no-op and the CDC path takes over.
     """
     create_dim_customer(spark)
-    if spark.table(DIM_CUSTOMER).count() > 0:
+    if spark.table(dim_customer_table()).count() > 0:
         print("dim_customer already seeded; skipping initial load")
         return 0
 
@@ -204,11 +205,11 @@ def seed_dim_customer(spark: SparkSession, as_of: str) -> int:
                 )
             ),
         )
-        .select(*[f.name for f in spark.table(DIM_CUSTOMER).schema.fields])
+        .select(*[f.name for f in spark.table(dim_customer_table()).schema.fields])
         .write.mode("append")
-        .saveAsTable(DIM_CUSTOMER)
+        .saveAsTable(dim_customer_table())
     )
-    return spark.table(DIM_CUSTOMER).count()
+    return spark.table(dim_customer_table()).count()
 
 
 def apply_customer_changes(spark: SparkSession, changes: DataFrame, as_of: str) -> dict:
@@ -220,14 +221,14 @@ def apply_customer_changes(spark: SparkSession, changes: DataFrame, as_of: str) 
     # anything that relies on file order fails here.
     deduped = dedupe_by_key(changes, ("customer_unique_id",), order_by="updated_at")
 
-    current = spark.table(DIM_CUSTOMER).filter(F.col("is_current"))
+    current = spark.table(dim_customer_table()).filter(F.col("is_current"))
     classified = scd2.classify_changes(
         current, deduped, "customer_unique_id", DIM_CUSTOMER_TRACKED, op_col="op"
     )
 
     return scd2.apply_scd2(
         spark,
-        DIM_CUSTOMER,
+        dim_customer_table(),
         classified,
         natural_key="customer_unique_id",
         attribute_cols=DIM_CUSTOMER_TRACKED,

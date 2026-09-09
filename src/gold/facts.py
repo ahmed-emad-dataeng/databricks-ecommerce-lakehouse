@@ -167,41 +167,56 @@ def build_fact_payment(spark: SparkSession) -> int:
 # Unity Catalog does not enforce these, but declaring them makes Catalog
 # Explorer render the star schema as an ERD and documents the joins for anyone
 # reading the model cold.
-CONSTRAINTS = [
-    ("dim_date", "ALTER TABLE {t} ALTER COLUMN date_sk SET NOT NULL"),
-    ("dim_date", "ALTER TABLE {t} ADD CONSTRAINT pk_dim_date PRIMARY KEY (date_sk)"),
-    ("dim_product", "ALTER TABLE {t} ALTER COLUMN product_sk SET NOT NULL"),
-    ("dim_product", "ALTER TABLE {t} ADD CONSTRAINT pk_dim_product PRIMARY KEY (product_sk)"),
-    ("dim_seller", "ALTER TABLE {t} ALTER COLUMN seller_sk SET NOT NULL"),
-    ("dim_seller", "ALTER TABLE {t} ADD CONSTRAINT pk_dim_seller PRIMARY KEY (seller_sk)"),
-    ("dim_customer", "ALTER TABLE {t} ALTER COLUMN customer_sk SET NOT NULL"),
-    ("dim_customer", "ALTER TABLE {t} ADD CONSTRAINT pk_dim_customer PRIMARY KEY (customer_sk)"),
-    (
-        "fact_order_item",
-        "ALTER TABLE {t} ADD CONSTRAINT fk_foi_product "
-        "FOREIGN KEY (product_sk) REFERENCES " + fqn(SCHEMA_GOLD, "dim_product"),
-    ),
-    (
-        "fact_order_item",
-        "ALTER TABLE {t} ADD CONSTRAINT fk_foi_seller "
-        "FOREIGN KEY (seller_sk) REFERENCES " + fqn(SCHEMA_GOLD, "dim_seller"),
-    ),
-    (
-        "fact_order_item",
-        "ALTER TABLE {t} ADD CONSTRAINT fk_foi_date "
-        "FOREIGN KEY (order_date_sk) REFERENCES " + fqn(SCHEMA_GOLD, "dim_date"),
-    ),
-    (
-        "fact_order",
-        "ALTER TABLE {t} ADD CONSTRAINT fk_fo_date "
-        "FOREIGN KEY (order_date_sk) REFERENCES " + fqn(SCHEMA_GOLD, "dim_date"),
-    ),
-]
+def _constraints() -> list[tuple[str, str]]:
+    """Built at call time: the REFERENCES clauses embed fully-qualified names,
+    which depend on the run's catalog."""
+    dim_product = fqn(SCHEMA_GOLD, "dim_product")
+    dim_seller = fqn(SCHEMA_GOLD, "dim_seller")
+    dim_date = fqn(SCHEMA_GOLD, "dim_date")
+    return [
+        ("dim_date", "ALTER TABLE {t} ALTER COLUMN date_sk SET NOT NULL"),
+        ("dim_date", "ALTER TABLE {t} ADD CONSTRAINT pk_dim_date PRIMARY KEY (date_sk)"),
+        ("dim_product", "ALTER TABLE {t} ALTER COLUMN product_sk SET NOT NULL"),
+        (
+            "dim_product",
+            "ALTER TABLE {t} ADD CONSTRAINT pk_dim_product PRIMARY KEY (product_sk)",
+        ),
+        ("dim_seller", "ALTER TABLE {t} ALTER COLUMN seller_sk SET NOT NULL"),
+        (
+            "dim_seller",
+            "ALTER TABLE {t} ADD CONSTRAINT pk_dim_seller PRIMARY KEY (seller_sk)",
+        ),
+        ("dim_customer", "ALTER TABLE {t} ALTER COLUMN customer_sk SET NOT NULL"),
+        (
+            "dim_customer",
+            "ALTER TABLE {t} ADD CONSTRAINT pk_dim_customer PRIMARY KEY (customer_sk)",
+        ),
+        (
+            "fact_order_item",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_foi_product "
+            f"FOREIGN KEY (product_sk) REFERENCES {dim_product}",
+        ),
+        (
+            "fact_order_item",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_foi_seller "
+            f"FOREIGN KEY (seller_sk) REFERENCES {dim_seller}",
+        ),
+        (
+            "fact_order_item",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_foi_date "
+            f"FOREIGN KEY (order_date_sk) REFERENCES {dim_date}",
+        ),
+        (
+            "fact_order",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_fo_date "
+            f"FOREIGN KEY (order_date_sk) REFERENCES {dim_date}",
+        ),
+    ]
 
 
 def apply_constraints(spark: SparkSession) -> None:
     """Idempotent: a constraint that already exists is skipped, not fatal."""
-    for table, template in CONSTRAINTS:
+    for table, template in _constraints():
         sql = template.format(t=fqn(SCHEMA_GOLD, table))
         try:
             spark.sql(sql)

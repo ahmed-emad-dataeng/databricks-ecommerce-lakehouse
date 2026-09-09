@@ -25,7 +25,8 @@ from pyspark.sql import functions as F
 
 from src.config import SCHEMA_GOLD, SCHEMA_OPS, fqn
 
-FINGERPRINT_TABLE = fqn(SCHEMA_OPS, "gold_fingerprints")
+def fingerprint_table() -> str:
+    return fqn(SCHEMA_OPS, "gold_fingerprints")
 
 # Table -> additive measures to sum. Empty tuple means count only.
 FINGERPRINT_SPEC: dict[str, tuple[str, ...]] = {
@@ -39,23 +40,25 @@ FINGERPRINT_SPEC: dict[str, tuple[str, ...]] = {
 }
 
 
-DDL = f"""
-CREATE TABLE IF NOT EXISTS {FINGERPRINT_TABLE} (
-  run_id       STRING,
-  run_date     DATE,
-  table_name   STRING,
-  row_count    BIGINT,
-  measure_sums MAP<STRING, DECIMAL(20,2)>,
-  captured_at  TIMESTAMP
-)
-COMMENT 'Gold-layer fingerprint per run. Grain: (run_id, table_name).
-         Used by the idempotency_check task to detect non-deterministic reruns.'
-"""
+def _ddl() -> str:
+    """Built at call time so it targets the run's catalog, not the default."""
+    return f"""
+    CREATE TABLE IF NOT EXISTS {fingerprint_table()} (
+      run_id       STRING,
+      run_date     DATE,
+      table_name   STRING,
+      row_count    BIGINT,
+      measure_sums MAP<STRING, DECIMAL(20,2)>,
+      captured_at  TIMESTAMP
+    )
+    COMMENT 'Gold-layer fingerprint per run. Grain: (run_id, table_name).
+             Used by the idempotency_check task to detect non-deterministic reruns.'
+    """
 
 
 def capture(spark: SparkSession, run_id: str, run_date: str) -> dict[str, dict]:
     """Fingerprint every gold table that exists and record it."""
-    spark.sql(DDL)
+    spark.sql(_ddl())
     rows, result = [], {}
 
     for table, measures in FINGERPRINT_SPEC.items():
@@ -81,7 +84,7 @@ def capture(spark: SparkSession, run_id: str, run_date: str) -> dict[str, dict]:
             "measure_sums map<string,decimal(20,2)>",
         ).withColumn("run_date", F.to_date("run_date")).withColumn(
             "captured_at", F.current_timestamp()
-        ).write.mode("append").saveAsTable(FINGERPRINT_TABLE)
+        ).write.mode("append").saveAsTable(fingerprint_table())
 
     return result
 
@@ -99,7 +102,7 @@ def check(spark: SparkSession, run_id: str, run_date: str, strict: bool = True) 
 
     previous_run = spark.sql(f"""
         SELECT run_id
-        FROM {FINGERPRINT_TABLE}
+        FROM {fingerprint_table()}
         WHERE run_date = date('{run_date}') AND run_id <> '{run_id}'
         ORDER BY captured_at DESC
         LIMIT 1
@@ -112,7 +115,7 @@ def check(spark: SparkSession, run_id: str, run_date: str, strict: bool = True) 
     prev_id = previous_run[0]["run_id"]
     prev_rows = spark.sql(f"""
         SELECT table_name, row_count, measure_sums
-        FROM {FINGERPRINT_TABLE}
+        FROM {fingerprint_table()}
         WHERE run_id = '{prev_id}'
     """).collect()
     previous = {
