@@ -95,6 +95,7 @@ class SourceTable:
     timestamp_cols: tuple[str, ...] = ()
     string_cols: tuple[str, ...] = ()
     rename: dict[str, str] = field(default_factory=dict)
+    csv_options: dict[str, str] = field(default_factory=dict)
 
     @property
     def source_glob(self) -> str:
@@ -146,6 +147,16 @@ CORE_TABLES: tuple[SourceTable, ...] = (
         sequence_col="review_answer_timestamp",
         timestamp_cols=("review_creation_date", "review_answer_timestamp"),
         string_cols=("review_comment_title",),
+        # MUST be multiLine: review_comment_message contains embedded newlines.
+        # The file is 104,719 lines but only 99,224 rows -- 5,495 comments wrap.
+        # Without this the CSV reader splits mid-record and silently produces
+        # thousands of corrupt rows instead of failing. `escape` set to the quote
+        # char because Olist follows RFC 4180 doubled-quote escaping, not
+        # Spark's default backslash.
+        #
+        # multiLine makes the file non-splittable, costing parallelism. At 14 MB
+        # that is irrelevant; correctness is not.
+        csv_options={"multiLine": "true", "escape": '"'},
     ),
     SourceTable(
         name="products",

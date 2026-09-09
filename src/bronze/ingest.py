@@ -39,6 +39,12 @@ from src.config import (
 INGEST_MODE = "auto_loader"  # or "copy_into"
 
 
+def _format_options(table: SourceTable) -> str:
+    """Render FORMAT_OPTIONS for COPY INTO, including per-table CSV options."""
+    opts = {"header": "true", "inferSchema": "false", **table.csv_options}
+    return ", ".join(f"'{k}' = '{v}'" for k, v in opts.items())
+
+
 def _with_provenance(df: DataFrame, batch_id: str) -> DataFrame:
     """Stamp where each row came from and when it landed."""
     return (
@@ -60,6 +66,7 @@ def ingest_auto_loader(spark: SparkSession, table: SourceTable, batch_id: str) -
         .option("cloudFiles.schemaEvolutionMode", "rescue")
         .option("header", "true")
         .option("rescuedDataColumn", "_rescued_data")
+        .options(**table.csv_options)  # e.g. multiLine for order_reviews
         .load(f"{path_olist()}/{table.source_file}")
     )
 
@@ -98,7 +105,7 @@ def ingest_copy_into(spark: SparkSession, table: SourceTable, batch_id: str) -> 
           FROM '{path_olist()}/{table.source_file}'
         )
         FILEFORMAT = CSV
-        FORMAT_OPTIONS ('header' = 'true', 'inferSchema' = 'false')
+        FORMAT_OPTIONS ({_format_options(table)})
         COPY_OPTIONS ('mergeSchema' = 'true')
     """)
     return spark.table(target).count() - before

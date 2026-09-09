@@ -69,3 +69,22 @@ def test_geolocation_is_not_in_the_default_load():
     assert "geolocation" not in {t.name for t in config.SOURCE_TABLES}
     assert "geolocation" in {t.name for t in config.OPTIONAL_TABLES}
     assert len(config.SOURCE_TABLES) == 8
+
+
+def test_order_reviews_declares_multiline_csv_parsing():
+    """Regression: olist_order_reviews_dataset.csv is 104,719 lines but only
+    99,224 rows -- 5,495 review comments contain embedded newlines. Without
+    multiLine the CSV reader splits mid-record and silently emits thousands of
+    corrupt rows rather than failing, so this must stay declared."""
+    reviews = config.SOURCE_TABLES_BY_NAME["order_reviews"]
+
+    assert reviews.csv_options.get("multiLine") == "true"
+    # RFC 4180 doubled-quote escaping, not Spark's default backslash.
+    assert reviews.csv_options.get("escape") == '"'
+
+
+def test_tables_without_embedded_newlines_declare_no_csv_options():
+    """multiLine makes a file non-splittable, so it is opt-in per table rather
+    than a blanket default."""
+    for name in ("customers", "orders", "order_items", "order_payments"):
+        assert config.SOURCE_TABLES_BY_NAME[name].csv_options == {}
