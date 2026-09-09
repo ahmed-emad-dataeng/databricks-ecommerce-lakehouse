@@ -265,6 +265,45 @@ coalesces to `False` first. Tested in `tests/test_transforms.py`.
 
 ---
 
+## 9a. Dashboard measures are computed from counts, not averaged percentages
+
+`v_delivery_performance` is grained at (month, customer_state). The obvious way
+to chart late-delivery rate by state is `AVG(late_rate_pct)` across a state's
+months. That is wrong, and quietly so.
+
+Averaging percentages weights a 40-order month the same as a 4,000-order month.
+Measured both ways for Maranhao:
+
+| method | late rate | avg delivery days |
+|---|---|---|
+| `AVG(late_rate_pct)` across months | 16.73% | 21.1 |
+| `SUM(late_orders) / SUM(orders)` | **18.80%** | **21.5** |
+
+Two percentage points on the headline number for the worst-performing state,
+from a choice that looks like a formatting detail. The README carried the wrong
+figure until the dashboard forced the question.
+
+The dashboard datasets therefore aggregate from the underlying counts:
+
+```sql
+round(100.0 * sum(late_orders) / sum(orders), 2)              AS late_rate_pct
+round(sum(avg_delivery_days * orders) / sum(orders), 1)       AS avg_delivery_days
+```
+
+The second is still an average of averages one level down -- `avg_delivery_days`
+is itself a monthly mean -- but order-weighting it recovers the correct
+population mean, because the weights are exactly the counts each mean was taken
+over. A comment in the dataset SQL says all of this, since the "simpler" version
+is a plausible-looking edit that reintroduces the bug.
+
+**The general point:** a rate is a ratio of two sums, never a mean of ratios.
+Views that expose the numerator and denominator separately -- as
+`v_delivery_performance` exposes `late_orders` alongside `orders` -- let a
+consumer get this right. Views that expose only the pre-computed percentage
+force the consumer into the error.
+
+---
+
 ## 10. What was deliberately left out
 
 | Not used | Why |

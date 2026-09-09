@@ -1,0 +1,413 @@
+{
+  "datasets": [
+    {
+      "name": "ds_revenue_monthly",
+      "displayName": "Monthly revenue",
+      "queryLines": [
+        "SELECT year_month, year, month, orders, revenue, avg_order_value\n",
+        "FROM v_revenue_monthly\n",
+        "-- Months with under 100 orders are dataset edges, not business signal:\n",
+        "-- Olist starts mid-2016 and stops mid-October 2018, so the first and last\n",
+        "-- partial months would render as a cliff and misread as a collapse.\n",
+        "WHERE orders >= 100"
+      ],
+      "columns": [
+        {
+          "displayName": "Total Revenue",
+          "description": "Sum of item revenue (price + freight) across non-cancelled order lines",
+          "expression": "SUM(`revenue`)"
+        },
+        {
+          "displayName": "Total Orders",
+          "description": "Distinct orders",
+          "expression": "SUM(`orders`)"
+        }
+      ]
+    },
+    {
+      "name": "ds_category",
+      "displayName": "Revenue by category",
+      "queryLines": [
+        "SELECT category, revenue, orders, pct_of_revenue, revenue_rank\n",
+        "FROM v_revenue_by_category\n",
+        "WHERE revenue_rank <= 10"
+      ],
+      "columns": []
+    },
+    {
+      "name": "ds_delivery_state",
+      "displayName": "Delivery performance by state",
+      "queryLines": [
+        "-- Aggregated from the underlying counts, NOT by averaging the monthly\n",
+        "-- percentages: an unweighted average of averages understates the worst\n",
+        "-- states (Maranhao reads 16.7% that way against a true 18.8%).\n",
+        "SELECT customer_state,\n",
+        "       sum(orders)      AS orders,\n",
+        "       sum(late_orders) AS late_orders,\n",
+        "       round(sum(avg_delivery_days * orders) / sum(orders), 1) AS avg_delivery_days,\n",
+        "       round(100.0 * sum(late_orders) / sum(orders), 2)        AS late_rate_pct\n",
+        "FROM v_delivery_performance\n",
+        "WHERE customer_state IS NOT NULL\n",
+        "GROUP BY customer_state\n",
+        "HAVING sum(orders) >= 500"
+      ],
+      "columns": [
+        {
+          "displayName": "Avg Delivery Days",
+          "description": "Order-weighted mean days from purchase to delivery",
+          "expression": "SUM(`avg_delivery_days` * `orders`) / SUM(`orders`)"
+        },
+        {
+          "displayName": "Late Rate Pct",
+          "description": "Late orders as a share of all orders, computed from counts",
+          "expression": "SUM(`late_orders`) * 100.0 / SUM(`orders`)"
+        }
+      ]
+    },
+    {
+      "name": "ds_payment",
+      "displayName": "Payment methods",
+      "queryLines": [
+        "SELECT payment_type, orders, total_paid, avg_installments, completion_rate_pct\n",
+        "FROM v_payment_method_completion\n",
+        "WHERE payment_type <> 'not_defined'"
+      ],
+      "columns": []
+    },
+    {
+      "name": "ds_repeat",
+      "displayName": "Repeat purchase rate",
+      "queryLines": [
+        "-- Keyed on customer_unique_id. Keyed on customer_id this reads 0.00%,\n",
+        "-- because Olist issues a new customer_id per order. See docs/decisions.md.\n",
+        "SELECT customers, repeat_customers, repeat_rate_pct,\n",
+        "       avg_orders_per_customer, avg_lifetime_value\n",
+        "FROM v_repeat_purchase_rate"
+      ],
+      "columns": [
+        {
+          "displayName": "Repeat Rate Pct",
+          "description": "Share of customers with more than one order, keyed on customer_unique_id",
+          "expression": "MAX(`repeat_rate_pct`)"
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Overview",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layout": [
+        {
+          "widget": {
+            "name": "title",
+            "multilineTextboxSpec": {
+              "lines": ["## Olist E-Commerce — Lakehouse Overview"]
+            }
+          },
+          "position": { "x": 0, "y": 0, "width": 12, "height": 1 }
+        },
+        {
+          "widget": {
+            "name": "story",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Revenue grew steadily across 2017–2018, but two things work against it: barely **3% of customers ever order again**, and delivery takes **more than twice as long** in the worst states as the best. Built on a Kimball star schema over 550,759 rows — all tiles read documented `gold` views, never the fact tables."
+              ]
+            }
+          },
+          "position": { "x": 0, "y": 1, "width": 12, "height": 2 }
+        },
+        {
+          "widget": {
+            "name": "kpi-revenue",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_revenue_monthly",
+                  "fields": [
+                    { "name": "measure(Total Revenue)", "expression": "MEASURE(`Total Revenue`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Total Revenue)",
+                  "displayName": "Total Revenue",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": { "type": "max", "places": 1 }
+                  }
+                }
+              },
+              "frame": { "title": "Total Revenue", "showTitle": true }
+            }
+          },
+          "position": { "x": 0, "y": 3, "width": 3, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "kpi-orders",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_revenue_monthly",
+                  "fields": [
+                    { "name": "measure(Total Orders)", "expression": "MEASURE(`Total Orders`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Total Orders)",
+                  "displayName": "Orders",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": { "type": "max", "places": 1 }
+                  }
+                }
+              },
+              "frame": { "title": "Orders", "showTitle": true }
+            }
+          },
+          "position": { "x": 3, "y": 3, "width": 3, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "kpi-repeat-rate",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_repeat",
+                  "fields": [
+                    { "name": "measure(Repeat Rate Pct)", "expression": "MEASURE(`Repeat Rate Pct`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Repeat Rate Pct)",
+                  "displayName": "Repeat Rate",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": { "type": "exact", "places": 2 },
+                    "suffix": "%"
+                  }
+                }
+              },
+              "frame": { "title": "Repeat-Purchase Rate", "showTitle": true }
+            }
+          },
+          "position": { "x": 6, "y": 3, "width": 3, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "kpi-delivery-days",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_delivery_state",
+                  "fields": [
+                    { "name": "measure(Avg Delivery Days)", "expression": "MEASURE(`Avg Delivery Days`)" }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Avg Delivery Days)",
+                  "displayName": "Avg Delivery Days",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": { "type": "exact", "places": 1 },
+                    "suffix": " days"
+                  }
+                }
+              },
+              "frame": { "title": "Avg Delivery Time", "showTitle": true }
+            }
+          },
+          "position": { "x": 9, "y": 3, "width": 3, "height": 3 }
+        },
+        {
+          "widget": {
+            "name": "revenue-trend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_revenue_monthly",
+                  "fields": [
+                    { "name": "year_month", "expression": "`year_month`" },
+                    { "name": "revenue", "expression": "`revenue`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "year_month",
+                  "scale": { "type": "categorical" },
+                  "displayName": "Month"
+                },
+                "y": {
+                  "fieldName": "revenue",
+                  "scale": { "type": "quantitative" },
+                  "displayName": "Revenue"
+                }
+              },
+              "frame": {
+                "title": "Revenue by month (months with 100+ orders)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": { "x": 0, "y": 6, "width": 8, "height": 6 }
+        },
+        {
+          "widget": {
+            "name": "top-categories",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_category",
+                  "fields": [
+                    { "name": "category", "expression": "`category`" },
+                    { "name": "revenue", "expression": "`revenue`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "revenue",
+                  "scale": { "type": "quantitative" },
+                  "displayName": "Revenue"
+                },
+                "y": {
+                  "fieldName": "category",
+                  "scale": { "type": "categorical", "sort": { "by": "x-reversed" } },
+                  "displayName": "Category"
+                }
+              },
+              "frame": { "title": "Top 10 categories by revenue", "showTitle": true }
+            }
+          },
+          "position": { "x": 8, "y": 6, "width": 4, "height": 6 }
+        },
+        {
+          "widget": {
+            "name": "delivery-by-state",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_delivery_state",
+                  "fields": [
+                    { "name": "customer_state", "expression": "`customer_state`" },
+                    { "name": "late_rate_pct", "expression": "`late_rate_pct`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "customer_state",
+                  "scale": { "type": "categorical", "sort": { "by": "y-reversed" } },
+                  "displayName": "State"
+                },
+                "y": {
+                  "fieldName": "late_rate_pct",
+                  "scale": { "type": "quantitative" },
+                  "displayName": "Late %"
+                }
+              },
+              "frame": {
+                "title": "Late-delivery rate by state (500+ orders, order-weighted)",
+                "showTitle": true
+              }
+            }
+          },
+          "position": { "x": 0, "y": 12, "width": 8, "height": 6 }
+        },
+        {
+          "widget": {
+            "name": "payment-mix",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_payment",
+                  "fields": [
+                    { "name": "payment_type", "expression": "`payment_type`" },
+                    { "name": "total_paid", "expression": "`total_paid`" }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "total_paid",
+                  "scale": { "type": "quantitative" },
+                  "displayName": "Paid"
+                },
+                "color": {
+                  "fieldName": "payment_type",
+                  "scale": { "type": "categorical" },
+                  "displayName": "Payment type"
+                },
+                "label": { "show": true }
+              },
+              "frame": { "title": "Value paid by payment method", "showTitle": true }
+            }
+          },
+          "position": { "x": 8, "y": 12, "width": 4, "height": 6 }
+        }
+      ]
+    }
+  ]
+}

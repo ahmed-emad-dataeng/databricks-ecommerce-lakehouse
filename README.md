@@ -214,12 +214,36 @@ All 13 views build and return data. Sample measured answers:
 | question | answer |
 |---|---|
 | top category by revenue | `health_beauty` — $1,437,666 (9.14% of total) |
-| worst delivery state | Maranhão — 21.1 days avg, **16.73% late** (750 orders) |
+| worst delivery state | Maranhão — 21.5 days avg, **18.80% late** (750 orders) |
 | payment mix | credit card 76,505 orders, 3.51 avg installments, 97.12% completion |
 | repeat-purchase rate | 3.12% |
 
-> **Dashboard and Genie space: not built yet.** These are remaining work, not
-> missing screenshots — nothing is claimed about them.
+### The dashboard is code, not clicks
+
+[`dashboards/ecommerce_overview.lvdash.json`](dashboards/ecommerce_overview.lvdash.json)
+is committed and deployed from the repo:
+
+```bash
+databricks lakeview create   --display-name "Olist E-Commerce Lakehouse - Overview"   --warehouse-id <WAREHOUSE_ID>   --dataset-catalog ecommerce_dev --dataset-schema gold   --serialized-dashboard "$(cat dashboards/ecommerce_overview.lvdash.json)"   --json '{"parent_path": "/Workspace/Users/<you>"}'
+```
+
+Ten widgets over five datasets, every one reading a documented `gold` view
+rather than a fact table: four KPI counters (revenue, orders, repeat rate,
+delivery time), a monthly revenue line, a top-10 category bar, a late-rate bar
+by state, and a payment-mix pie.
+
+Two deliberate choices visible in the JSON:
+
+- **The revenue trend filters to months with 100+ orders.** Olist starts
+  mid-2016 and stops on 17 October 2018, so the partial edge months would render
+  as a cliff and read as a collapse that never happened.
+- **State delivery rates are computed from counts, not by averaging monthly
+  percentages.** An unweighted average of averages understates the worst states
+  — Maranhão reads 16.7% that way against a true **18.8%**. The dataset SQL
+  carries a comment saying so, because it is the kind of thing that gets
+  "simplified" back into a bug.
+
+> **Genie space: not built yet.** Remaining work, not a missing screenshot.
 
 ---
 
@@ -362,6 +386,7 @@ src/
     run_log.py           pipeline_runs + dq_results
     idempotency.py       fingerprint + cross-run comparison
 sql/views/               13 documented analytical + reconciliation views
+dashboards/              AI/BI dashboard as code (.lvdash.json)
 notebooks/               thin job entrypoints (logic lives in src/)
 tests/                   19 tests; 3 pin the SCD2 transitions
 resources/               Lakeflow Job as YAML
