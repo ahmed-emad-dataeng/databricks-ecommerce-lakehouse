@@ -168,11 +168,18 @@ databricks bundle validate
 databricks bundle deploy --target dev
 ```
 
-Bundles shell out to Terraform, and Free Edition users have reported the
-Terraform download failing. That download happens **on your machine**, not in the
-workspace, so running the CLI locally is expected to work — the reported failures
-came from running it inside a workspace terminal, where outbound egress is
-restricted.
+**This is now very likely to just work.** The Terraform concern that originally
+motivated a three-path spike no longer applies: CLI v1.15.0 defaults to the
+`direct` deployment engine, not Terraform. Verified from the bundle schema:
+
+> `engine`: The deployment engine to use. Valid values are `terraform` and
+> `direct`. Takes priority over `DATABRICKS_BUNDLE_ENGINE`. **Default is
+> `"direct"`.**
+
+So there is no Terraform binary to download, which is what the older Free Edition
+failure reports were about. Belt and braces: `releases.hashicorp.com` responds
+HTTP 200 from this machine in ~0.8s, so even forcing `engine: terraform` would
+work. Nothing Terraform-shaped is cached locally because nothing needs to be.
 
 ### Path 2 — deploy the bundle from the workspace UI
 
@@ -192,8 +199,12 @@ databricks jobs create --json @jobs/ecommerce_job.json
 databricks jobs reset --json @jobs/ecommerce_job.json
 ```
 
-Still infrastructure-as-code, still version-controlled, no Terraform dependency.
-Note the choice in `docs/decisions.md` and move on to M1.
+Still infrastructure-as-code, still version-controlled. Note the choice in
+`docs/decisions.md` and move on to M1.
+
+Realistically you should not reach this path. It stays documented because the
+only genuinely untested step is `auth login` against a real workspace, and a
+fallback that costs nothing to keep is worth keeping.
 
 ---
 
@@ -220,7 +231,7 @@ in the first 20 minutes of the milestone rather than at the end.
 | Assumption | Where | Fallback |
 |---|---|---|
 | Auto Loader checkpoints work in a UC volume on serverless | `src/bronze/ingest.py` | Set `INGEST_MODE = "copy_into"` — equally file-idempotent, no checkpoint needed |
-| Bundle deploy works from the laptop | step 5 | Paths 2 then 3 above |
+| `auth login` succeeds against a Free Edition host | step 5 | Paths 2 then 3 above. The Terraform risk is resolved (see step 5); this is the only untested part left. |
 
 ---
 

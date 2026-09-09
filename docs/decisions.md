@@ -235,7 +235,7 @@ coalesces to `False` first. Tested in `tests/test_transforms.py`.
 | Kafka | A generated file-based change feed demonstrates the same CDC concepts at zero cost. |
 | Airflow | Lakeflow Jobs is the native orchestrator and is what this project is meant to show. |
 | dbt | Project 1 covers it. Adding it here would dilute the PySpark evidence this project exists to provide. |
-| Terraform | Declarative Automation Bundles is the native IaC path and needs no separate tool. |
+| Terraform | Declarative Automation Bundles is the native IaC path and needs no separate tool. As of CLI v1.15.0 bundles default to the `direct` deployment engine, so Terraform is not even an implementation detail underneath any more. |
 | Power BI | Project 1 covers it. AI/BI + Genie keeps this project Databricks-native. |
 | A large dataset | The objective is engineering evidence, not benchmarking. ~550K rows on a quota-limited account is the right size. |
 | Olist `geolocation` | ~1M rows — two thirds of the raw dataset — and no dimension, fact or view joins to it. `dim_customer` carries the zip prefix directly. Ingesting it would spend most of the quota on a table nothing reads, so it is opt-in via `OPTIONAL_TABLES`. |
