@@ -210,6 +210,12 @@ SOURCE_TABLES_BY_NAME = {t.name: t for t in CORE_TABLES + OPTIONAL_TABLES}
 # --- SCD2 -----------------------------------------------------------------
 SCD2_END_OF_TIME = "9999-12-31 00:00:00"
 
+# Floor for a version-1 effective_from when the customer's first order date is
+# unknown. Belt-and-braces: a NULL effective_from makes every point-in-time join
+# for that customer fail silently (NULL >= ts is NULL, so no row matches), which
+# orphans their facts with no error raised.
+SCD2_BEGINNING_OF_TIME = "1970-01-01 00:00:00"
+
 # Attributes tracked for history on dim_customer. A change in any of these
 # closes the current version and opens a new one.
 DIM_CUSTOMER_TRACKED = ("customer_city", "customer_state", "customer_segment")

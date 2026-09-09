@@ -21,6 +21,7 @@ from pyspark.sql.window import Window
 
 from src.config import (
     DIM_CUSTOMER_TRACKED,
+    SCD2_BEGINNING_OF_TIME,
     SCD2_END_OF_TIME,
     SCHEMA_GOLD,
     SCHEMA_OPS,
@@ -28,7 +29,7 @@ from src.config import (
     fqn,
 )
 from src.gold import scd2
-from src.silver.transforms import compute_customer_segment
+from src.silver.transforms import compute_customer_segment, compute_first_order_ts
 
 def dim_customer_table() -> str:
     return fqn(SCHEMA_GOLD, "dim_customer")
@@ -133,18 +134,26 @@ def customer_attributes(spark: SparkSession, as_of: str) -> DataFrame:
         )
     )
 
-    return latest_address.join(
-        segments.select(
+    # first_order_ts comes from the UNFILTERED aggregate: it drives
+    # effective_from and must not depend on run_date. Everything else here is
+    # legitimately as-of dependent.
+    first_order = compute_first_order_ts(with_person)
+
+    return (
+        latest_address.join(
+            segments.select(
+                "customer_unique_id",
+                "customer_segment",
+                "order_count",
+                "lifetime_value",
+                "last_order_ts",
+            ),
             "customer_unique_id",
-            "customer_segment",
-            "order_count",
-            "lifetime_value",
-            "first_order_ts",
-            "last_order_ts",
-        ),
-        "customer_unique_id",
-        "left",
-    ).fillna({"customer_segment": UNKNOWN, "order_count": 0})
+            "left",
+        )
+        .join(first_order, "customer_unique_id", "left")
+        .fillna({"customer_segment": UNKNOWN, "order_count": 0})
+    )
 
 
 def create_dim_customer(spark: SparkSession) -> None:
@@ -190,7 +199,15 @@ def seed_dim_customer(spark: SparkSession, as_of: str) -> int:
     hashed = scd2.add_row_hash(attrs, DIM_CUSTOMER_TRACKED)
 
     (
-        hashed.withColumn("effective_from", F.col("first_order_ts"))
+        # Floored: a NULL effective_from would orphan every fact row for this
+        # customer in the point-in-time join, silently.
+        hashed.withColumn(
+            "effective_from",
+            F.coalesce(
+                F.col("first_order_ts"),
+                F.lit(SCD2_BEGINNING_OF_TIME).cast("timestamp"),
+            ),
+        )
         .withColumn("effective_to", F.lit(SCD2_END_OF_TIME).cast("timestamp"))
         .withColumn("is_current", F.lit(True))
         .withColumn("is_deleted", F.lit(False))

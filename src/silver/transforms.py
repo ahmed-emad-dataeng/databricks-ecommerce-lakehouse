@@ -176,6 +176,28 @@ def aggregate_geolocation(df: DataFrame) -> DataFrame:
     )
 
 
+def compute_first_order_ts(orders: DataFrame) -> DataFrame:
+    """Earliest order timestamp per customer. Deliberately NOT as-of filtered.
+
+    A customer's first order date is immutable -- it is a property of the
+    customer, not of the reporting window -- and it drives
+    dim_customer.effective_from for the initial SCD2 version.
+
+    Deriving it from an as-of-filtered aggregate is a real bug: customers whose
+    first order falls after run_date get a NULL first_order_ts, hence a NULL
+    effective_from, and `ts >= NULL` evaluates to NULL so every point-in-time
+    join for them fails. Their facts get a NULL surrogate key with no error
+    raised. Measured at run_date 2018-10-01 that was 1 orphaned order; at
+    run_date 2017-01-01 it would be most of the dataset.
+
+    Contrast with compute_customer_segment, which SHOULD be as-of filtered --
+    a segment is a statement about behaviour up to a point in time.
+    """
+    return orders.groupBy("customer_unique_id").agg(
+        F.min("order_purchase_timestamp").alias("first_order_ts")
+    )
+
+
 def compute_customer_segment(
     orders: DataFrame, as_of: Column, lapsed_days: int = 180, high_value: float = 1000.0
 ) -> DataFrame:

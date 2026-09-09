@@ -5,6 +5,8 @@ from pyspark.sql import functions as F
 from src.silver.transforms import (
     DQRule,
     aggregate_geolocation,
+    compute_customer_segment,
+    compute_first_order_ts,
     count_rule_failures,
     dedupe_by_key,
     normalise_strings,
@@ -154,3 +156,48 @@ def test_count_rule_failures_counts_warn_rules_too(spark):
 def test_count_rule_failures_with_no_rules_returns_empty(spark):
     df = spark.createDataFrame([("o1",)], "order_id string")
     assert count_rule_failures(df, []).count() == 0
+
+
+# --- as-of semantics: the bug was one aggregate being filtered when it should
+# --- not have been. These two tests pin which side of the line each falls on.
+def _orders(spark):
+    return spark.createDataFrame(
+        [
+            # early customer: both orders before the as-of date
+            ("early", "2017-01-01 00:00:00", 100.0),
+            ("early", "2017-06-01 00:00:00", 50.0),
+            # late customer: ONLY order is AFTER the as-of date
+            ("late", "2018-12-01 00:00:00", 70.0),
+        ],
+        "customer_unique_id string, order_purchase_timestamp string, order_total double",
+    ).withColumn(
+        "order_purchase_timestamp", F.to_timestamp("order_purchase_timestamp")
+    )
+
+
+def test_first_order_ts_is_not_as_of_filtered(spark):
+    """Regression: first_order_ts drives dim_customer.effective_from, and a NULL
+    effective_from makes `ts >= NULL` NULL, so every point-in-time join for that
+    customer silently fails and orphans their facts. It must be populated for a
+    customer whose only order is after run_date."""
+    got = {r["customer_unique_id"]: r["first_order_ts"] for r in
+           compute_first_order_ts(_orders(spark)).collect()}
+
+    assert set(got) == {"early", "late"}
+    assert got["early"].year == 2017  # the MIN, not the max
+    # The whole point: present despite being after any plausible as-of date.
+    assert got["late"] is not None
+    assert got["late"].year == 2018
+
+
+def test_customer_segment_IS_as_of_filtered(spark):
+    """The other side of the line: a segment is a claim about behaviour up to a
+    point in time, so orders after as_of must be excluded."""
+    as_of = F.lit("2018-01-01 00:00:00").cast("timestamp")
+    rows = {r["customer_unique_id"]: r for r in
+            compute_customer_segment(_orders(spark), as_of).collect()}
+
+    # "early" has both orders inside the window.
+    assert rows["early"]["order_count"] == 2
+    # "late" ordered only after as_of, so it must not appear at all.
+    assert "late" not in rows
