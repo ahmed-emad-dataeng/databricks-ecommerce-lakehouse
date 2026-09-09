@@ -20,6 +20,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
 from src.config import (
+    DIM_CUSTOMER_ATTRIBUTES,
     DIM_CUSTOMER_TRACKED,
     SCD2_BEGINNING_OF_TIME,
     SCD2_END_OF_TIME,
@@ -244,8 +245,18 @@ def apply_customer_changes(spark: SparkSession, changes: DataFrame, as_of: str) 
     deduped = dedupe_by_key(changes, ("customer_unique_id",), order_by="updated_at")
 
     current = spark.table(dim_customer_table()).filter(F.col("is_current"))
+
+    # Complete each change row against the version it supersedes before change
+    # detection: the feed sends city/state only, while the dimension also holds
+    # a derived segment plus five carry-forward attributes.
+    resolved = scd2.resolve_against_current(
+        deduped, current, "customer_unique_id", DIM_CUSTOMER_ATTRIBUTES
+    )
+
+    # Change detection stays on TRACKED only -- inheriting a carry-forward value
+    # must not look like a change and must not open a version.
     classified = scd2.classify_changes(
-        current, deduped, "customer_unique_id", DIM_CUSTOMER_TRACKED, op_col="op"
+        current, resolved, "customer_unique_id", DIM_CUSTOMER_TRACKED, op_col="op"
     )
 
     return scd2.apply_scd2(
@@ -253,7 +264,7 @@ def apply_customer_changes(spark: SparkSession, changes: DataFrame, as_of: str) 
         dim_customer_table(),
         classified,
         natural_key="customer_unique_id",
-        attribute_cols=DIM_CUSTOMER_TRACKED,
+        attribute_cols=DIM_CUSTOMER_ATTRIBUTES,
         effective_from=F.lit(as_of).cast("timestamp"),
         staging_table=fqn(SCHEMA_OPS, "_stg_customer_changes"),
     )

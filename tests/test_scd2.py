@@ -24,6 +24,7 @@ from src.gold.scd2 import (
     add_row_hash,
     build_new_versions,
     classify_changes,
+    resolve_against_current,
     keys_to_close,
 )
 
@@ -172,3 +173,118 @@ def test_unchanged_keys_produce_no_versions_at_all(spark):
     assert build_new_versions(
         classified, NK, TRACKED, F.current_timestamp()
     ).count() == 0
+
+
+# --- Overlaying a partial CDC row onto the current version -----------------
+# A change feed sends only what the source system changed. A new SCD2 version
+# must still be a complete dimension row, so omitted attributes inherit.
+ATTRS = ("city", "segment", "lifetime_value")
+
+
+def _current_full(spark):
+    return spark.createDataFrame(
+        [("c1", "cairo", "high_value", 900.0)],
+        f"{NK} string, city string, segment string, lifetime_value double",
+    )
+
+
+def test_omitted_attribute_is_inherited_not_blanked(spark):
+    """The feed carries city but not segment or lifetime_value. Those must come
+    from the version being superseded -- a city change must not wipe out a
+    customer's lifetime value."""
+    incoming = spark.createDataFrame(
+        [("c1", "alexandria", "U")], f"{NK} string, city string, op string"
+    )
+    got = resolve_against_current(
+        incoming, _current_full(spark), NK, ATTRS
+    ).collect()[0]
+
+    assert got["city"] == "alexandria"        # changed
+    assert got["segment"] == "high_value"     # inherited
+    assert got["lifetime_value"] == 900.0     # inherited, not NULL
+    assert got["op"] == "U"                   # passthrough preserved
+
+
+def test_null_in_the_feed_means_no_change_and_inherits(spark):
+    """IGNORE NULL UPDATES: a NULL in a carried column is "unchanged", not
+    "set to NULL"."""
+    incoming = spark.createDataFrame(
+        [("c1", None, "U")], f"{NK} string, city string, op string"
+    )
+    got = resolve_against_current(
+        incoming, _current_full(spark), NK, ATTRS
+    ).collect()[0]
+
+    assert got["city"] == "cairo"  # inherited, NOT blanked
+
+
+def test_brand_new_key_gets_nulls_rather_than_failing(spark):
+    """Nothing is known about a key with no current row. NULL is the honest
+    answer; effective_from does not depend on these, so no orphan risk."""
+    incoming = spark.createDataFrame(
+        [("brand_new", "luxor", "I")], f"{NK} string, city string, op string"
+    )
+    got = resolve_against_current(
+        incoming, _current_full(spark), NK, ATTRS
+    ).collect()[0]
+
+    assert got["city"] == "luxor"
+    assert got["segment"] is None
+    assert got["lifetime_value"] is None
+
+
+def test_inheriting_a_carry_forward_value_is_not_a_change(spark):
+    """The whole point of separating tracked from carry-forward: resolving an
+    omitted attribute must not look like a change and must not open a version."""
+    current = _current_full(spark)
+    incoming = spark.createDataFrame(
+        [("c1", "cairo", "U")], f"{NK} string, city string, op string"
+    )
+    resolved = resolve_against_current(incoming, current, NK, ATTRS)
+
+    # Track only city/segment; lifetime_value is carry-forward.
+    classified = classify_changes(
+        add_row_hash(current, ("city", "segment")),
+        resolved,
+        NK,
+        ("city", "segment"),
+        op_col="op",
+    )
+    assert {r[NK]: r[ACTION] for r in classified.collect()} == {"c1": UNCHANGED}
+
+
+def test_keys_to_close_carries_effective_from_as_closed_at(spark):
+    """Regression: keys_to_close projected effective_from away, and apply_scd2
+    then referenced it to stamp effective_to on the closed row. The failure
+    surfaced as UNRESOLVED_COLUMN from inside a Delta MERGE, nowhere near the
+    projection that caused it."""
+    current = _current(spark, [("c1", "cairo", "new")])
+    incoming = spark.createDataFrame(
+        [("c1", "alexandria", "new", "U")], INCOMING_SCHEMA
+    )
+    classified = classify_changes(current, incoming, NK, TRACKED, op_col="op")
+    staged = classified.withColumn(
+        "effective_from", F.lit("2018-10-01 00:00:00").cast("timestamp")
+    )
+
+    closing = keys_to_close(staged, NK)
+
+    assert "closed_at" in closing.columns
+    row = closing.collect()[0]
+    assert row[NK] == "c1"
+    assert row["closed_at"].year == 2018
+
+
+def test_keys_to_close_works_without_effective_from(spark):
+    """The column is optional: the pure-classification tests call this without
+    an effective_from and must keep working."""
+    current = _current(spark, [("c1", "cairo", "new")])
+    incoming = spark.createDataFrame(
+        [("c1", "alexandria", "new", "U")], INCOMING_SCHEMA
+    )
+    closing = keys_to_close(
+        classify_changes(current, incoming, NK, TRACKED, op_col="op"), NK
+    )
+
+    assert "closed_at" not in closing.columns
+    assert [r[NK] for r in closing.collect()] == ["c1"]

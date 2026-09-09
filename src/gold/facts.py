@@ -173,6 +173,9 @@ def _constraints() -> list[tuple[str, str]]:
     dim_product = fqn(SCHEMA_GOLD, "dim_product")
     dim_seller = fqn(SCHEMA_GOLD, "dim_seller")
     dim_date = fqn(SCHEMA_GOLD, "dim_date")
+    dim_customer = fqn(SCHEMA_GOLD, "dim_customer")
+    dim_order_status = fqn(SCHEMA_GOLD, "dim_order_status")
+    dim_payment_type = fqn(SCHEMA_GOLD, "dim_payment_type")
     return [
         ("dim_date", "ALTER TABLE {t} ALTER COLUMN date_sk SET NOT NULL"),
         ("dim_date", "ALTER TABLE {t} ADD CONSTRAINT pk_dim_date PRIMARY KEY (date_sk)"),
@@ -209,6 +212,50 @@ def _constraints() -> list[tuple[str, str]]:
         (
             "fact_order",
             "ALTER TABLE {t} ADD CONSTRAINT fk_fo_date "
+            f"FOREIGN KEY (order_date_sk) REFERENCES {dim_date}",
+        ),
+        # The two lookup dims and fact_payment were missing from the ERD, so
+        # Catalog Explorer rendered the star with unconnected tables.
+        ("dim_order_status", "ALTER TABLE {t} ALTER COLUMN order_status_sk SET NOT NULL"),
+        (
+            "dim_order_status",
+            "ALTER TABLE {t} ADD CONSTRAINT pk_dim_order_status "
+            "PRIMARY KEY (order_status_sk)",
+        ),
+        ("dim_payment_type", "ALTER TABLE {t} ALTER COLUMN payment_type_sk SET NOT NULL"),
+        (
+            "dim_payment_type",
+            "ALTER TABLE {t} ADD CONSTRAINT pk_dim_payment_type "
+            "PRIMARY KEY (payment_type_sk)",
+        ),
+        (
+            "fact_order",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_fo_customer "
+            f"FOREIGN KEY (customer_sk) REFERENCES {dim_customer}",
+        ),
+        (
+            "fact_order",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_fo_status "
+            f"FOREIGN KEY (order_status_sk) REFERENCES {dim_order_status}",
+        ),
+        (
+            "fact_order_item",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_foi_customer "
+            f"FOREIGN KEY (customer_sk) REFERENCES {dim_customer}",
+        ),
+        (
+            "fact_payment",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_fp_customer "
+            f"FOREIGN KEY (customer_sk) REFERENCES {dim_customer}",
+        ),
+        (
+            "fact_payment",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_fp_type "
+            f"FOREIGN KEY (payment_type_sk) REFERENCES {dim_payment_type}",
+        ),
+        (
+            "fact_payment",
+            "ALTER TABLE {t} ADD CONSTRAINT fk_fp_date "
             f"FOREIGN KEY (order_date_sk) REFERENCES {dim_date}",
         ),
     ]

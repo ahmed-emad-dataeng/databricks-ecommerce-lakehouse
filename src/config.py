@@ -219,3 +219,19 @@ SCD2_BEGINNING_OF_TIME = "1970-01-01 00:00:00"
 # Attributes tracked for history on dim_customer. A change in any of these
 # closes the current version and opens a new one.
 DIM_CUSTOMER_TRACKED = ("customer_city", "customer_state", "customer_segment")
+
+# Attributes a new version must carry but that do NOT themselves trigger one.
+# A CDC feed sends only what changed, so these are inherited from the version
+# being superseded -- a city change must not blank out a customer's lifetime
+# value.
+DIM_CUSTOMER_CARRY_FORWARD = (
+    "customer_zip_code_prefix",
+    "order_count",
+    "lifetime_value",
+    "first_order_ts",
+    "last_order_ts",
+)
+
+# Every non-generated attribute on a dimension row. build_new_versions must
+# supply all of them or the write fails schema conformance.
+DIM_CUSTOMER_ATTRIBUTES = DIM_CUSTOMER_TRACKED + DIM_CUSTOMER_CARRY_FORWARD

@@ -54,6 +54,45 @@ def add_row_hash(df: DataFrame, tracked_cols: tuple[str, ...]) -> DataFrame:
     return df.withColumn(ROW_HASH, F.xxhash64(F.concat_ws("||", *parts)))
 
 
+def resolve_against_current(
+    incoming: DataFrame,
+    current: DataFrame,
+    natural_key: str,
+    attribute_cols: tuple[str, ...],
+) -> DataFrame:
+    """Overlay a CDC change row onto the customer's current dimension row.
+
+    A change row carries only the columns the source system actually sent, but a
+    new SCD2 version has to be a COMPLETE dimension row. So per attribute:
+
+      * carried by the change  -> take the change; NULL means "no change" and
+                                  inherits (the IGNORE NULL UPDATES semantics
+                                  that AUTO CDC spells out explicitly)
+      * omitted by the change  -> inherit from the version being superseded
+      * brand-new key          -> NULL, which is honest: nothing is known yet
+
+    Without this, a city change would blank out the customer's lifetime value
+    and order count, and tracking an attribute the feed never sends (here,
+    the derived customer_segment) would fail outright on a missing column.
+    """
+    cur = current.select(
+        F.col(natural_key).alias("_nk"),
+        *[F.col(c).alias(f"_cur_{c}") for c in attribute_cols],
+    )
+    joined = incoming.join(cur, incoming[natural_key] == cur["_nk"], "left")
+
+    resolved = [
+        (
+            F.coalesce(F.col(c), F.col(f"_cur_{c}")).alias(c)
+            if c in incoming.columns
+            else F.col(f"_cur_{c}").alias(c)
+        )
+        for c in attribute_cols
+    ]
+    passthrough = [F.col(c) for c in incoming.columns if c not in attribute_cols]
+    return joined.select(*passthrough, *resolved)
+
+
 def classify_changes(
     current: DataFrame,
     incoming: DataFrame,
@@ -139,10 +178,19 @@ def keys_to_close(classified: DataFrame, natural_key: str) -> DataFrame:
 
     Only changed and deleted keys. `new` has nothing to close; `unchanged` must
     be left strictly alone -- that is the no-op guarantee.
+
+    `effective_from` is carried through as `closed_at` when present, because the
+    MERGE needs it to stamp effective_to on the row it closes. Projecting it away
+    here and re-referencing it afterwards is exactly what broke this: the frame
+    no longer had the column, and the failure surfaced as UNRESOLVED_COLUMN from
+    inside a MERGE rather than anywhere near this function.
     """
+    cols = [F.col(natural_key)]
+    if "effective_from" in classified.columns:
+        cols.append(F.col("effective_from").alias("closed_at"))
     return (
         classified.filter(F.col(ACTION).isin(CHANGED, DELETED))
-        .select(F.col(natural_key))
+        .select(*cols)
         .distinct()
     )
 
@@ -180,9 +228,7 @@ def apply_scd2(
         counts[row[ACTION]] = row["count"]
 
     if counts[CHANGED] or counts[DELETED]:
-        keys_to_close(staged, natural_key).withColumn(
-            "closed_at", F.col("effective_from")
-        ).createOrReplaceTempView("_scd_closing")
+        keys_to_close(staged, natural_key).createOrReplaceTempView("_scd_closing")
         spark.sql(f"""
             MERGE INTO {target_table} AS tgt
             USING _scd_closing AS src
