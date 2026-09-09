@@ -29,9 +29,7 @@ that shaped the design are documented rather than hidden — see
 >
 > **Consumption layer is live**: an AI/BI dashboard (10 widgets) and a Genie
 > space, both defined as code in this repo and both verified against the data.
->
-> **Remaining:** the ERD needs a Catalog Explorer screenshot — the 16
-> informational constraints it renders from are applied.
+> Every milestone in the original plan is complete.
 
 ---
 
@@ -107,7 +105,21 @@ verified in `information_schema.table_constraints`. Unity Catalog does not
 enforce them; they exist so Catalog Explorer renders the star schema and so the
 joins are documented for anyone reading the model cold.
 
-> **ERD screenshot:** still to add — needs a human in Catalog Explorer.
+![Star schema rendered by Catalog Explorer](assets/erd.png)
+
+`fact_order_item` at the centre with its four foreign keys — `product_sk`,
+`seller_sk`, `customer_sk`, `order_date_sk` — resolving to `dim_product`,
+`dim_seller`, `dim_customer` and `dim_date`, each showing its primary key.
+Catalog Explorer draws this from the declared constraints alone; it is not a
+hand-made diagram.
+
+The customer dimension's SCD Type 2 machinery is visible in the column list:
+`effective_from`, `effective_to`, `is_current`, `is_deleted` and the `_row_hash`
+used for change detection.
+
+(The diagram shows one fact's neighbourhood, which is the clearest view of the
+star. `fact_order` and `fact_payment` have their own relationships to the same
+dimensions — 16 constraints in total across the gold schema.)
 
 ### Two traps this model exists to avoid
 
