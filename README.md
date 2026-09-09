@@ -20,14 +20,14 @@ Everything runs on **Databricks Free Edition at $0**. The platform constraints
 that shaped the design are documented rather than hidden — see
 [Free Edition limitations](#free-edition-limitations-and-what-they-changed).
 
-> **Status — verified against a live Free Edition workspace:**
-> `bronze_ingest`, `silver_clean` and `gold_dims` all run green. 550,759 rows
-> loaded across 8 bronze tables, 8 silver tables, 7 quarantine tables and 6 gold
-> dimensions. Numbers below marked measured are from that run.
+> **Status — verified against a live Free Edition workspace.**
+> `bronze_ingest`, `silver_clean`, `gold_dims`, `gold_facts` and `cdc_apply` all
+> run green: 550,759 rows across 8 bronze tables, 8 silver, 7 quarantine, 6 gold
+> dimensions and 3 fact grains, with one day of CDC applied and SCD Type 2
+> history in place. Every number below marked measured comes from that run.
 >
-> **Not yet run:** the three fact tables, the CDC/SCD2 path, the analytical
-> views, the AI/BI dashboard, the Genie space, and the end-to-end idempotency
-> check. Those remain `TBD` and are not claimed.
+> **Not yet run:** the analytical views, the AI/BI dashboard, the Genie space,
+> and the end-to-end idempotency check. Those remain `TBD` and are not claimed.
 
 ---
 
@@ -137,6 +137,49 @@ correct and inflated revenue side by side.
 the customer **version** current at purchase time, and puts the present-day
 values in adjacent columns so the difference is visible. This is the query that
 proves SCD Type 2 was implemented rather than named.
+
+**Measured, after applying one day of CDC changes:**
+
+| order date | city at order time | city today |
+|---|---|---|
+| 2018-05-19 | sao paulo | belo horizonte |
+| 2018-07-08 | sao luis | sao paulo |
+| 2018-01-18 | curitiba | fortaleza |
+| 2018-01-29 | piracicaba | manaus |
+| 2018-03-13 | mogi das cruzes | fortaleza |
+
+Each order resolved to the customer version valid at *its own* purchase
+timestamp. A natural-key join would have reported the right-hand column for all
+of them, silently restating history.
+
+**The number that proves closed versions stay joinable:** of 99,441 fact rows,
+**51 now point at a closed (`is_current = false`) version** and 99,390 at a
+current one — with **0 unresolvable** surrogate keys. Superseding a version does
+not orphan the facts that reference it, which is the entire reason SCD2 works.
+
+### SCD2 state after CDC day 1
+
+| | count |
+|---|---|
+| total versions | 96,144 |
+| distinct customers | 96,099 |
+| current versions | 96,099 (exactly one per customer) |
+| closed versions | 45 (40 changed + 5 deleted) |
+| tombstones (`is_deleted`) | 5 |
+| live population (`is_current AND NOT is_deleted`) | 96,094 |
+
+Day 1 carried 49 change rows → 48 distinct keys after dedup → 40 `changed`,
+5 `deleted`, 3 `new`. Every row accounted for, no key left with zero or several
+current versions, and no overlapping validity windows.
+
+**Carry-forward held: 40 of 40** new versions kept their `lifetime_value`,
+`order_count`, `first_order_ts`, `customer_segment` and zip — zero blanked. A
+city change must not erase a customer's financial history, and it didn't.
+
+**Dedup held:** the generator plants a duplicate key whose later `updated_at`
+sits at an arbitrary file position. The surviving version is
+`correct-city-wins`, so neither first-row-seen nor last-row-seen decided it —
+only ordering by `updated_at`.
 
 ---
 
