@@ -20,14 +20,16 @@ Everything runs on **Databricks Free Edition at $0**. The platform constraints
 that shaped the design are documented rather than hidden — see
 [Free Edition limitations](#free-edition-limitations-and-what-they-changed).
 
-> **Status — verified against a live Free Edition workspace.**
-> `bronze_ingest`, `silver_clean`, `gold_dims`, `gold_facts` and `cdc_apply` all
-> run green: 550,759 rows across 8 bronze tables, 8 silver, 7 quarantine, 6 gold
-> dimensions and 3 fact grains, with one day of CDC applied and SCD Type 2
-> history in place. Every number below marked measured comes from that run.
+> **Status — the full 8-task pipeline runs green end to end, twice, on a live
+> Free Edition workspace.** 550,759 rows across 8 bronze tables, 8 silver,
+> 7 quarantine, 6 dimensions, 3 fact grains and 13 analytical views, with CDC
+> applied, SCD Type 2 history in place, and the re-run guarantee verified by
+> comparing gold fingerprints across two identical runs. Test suite: **46 passed**.
+> Every number in this README is measured, not estimated.
 >
-> **Not yet run:** the analytical views, the AI/BI dashboard, the Genie space,
-> and the end-to-end idempotency check. Those remain `TBD` and are not claimed.
+> **Remaining work:** the AI/BI dashboard and the Genie space are not built yet
+> (not "built but unphotographed"), and the ERD needs a Catalog Explorer
+> screenshot — the 16 informational constraints it renders from are applied.
 
 ---
 
@@ -98,7 +100,12 @@ Three facts, three grains, stated in every table's `COMMENT`:
 Informational PK/FK constraints are declared so Catalog Explorer renders the
 star schema as an ERD.
 
-> **ERD screenshot:** TBD (Catalog Explorer, after first run)
+**16 informational constraints applied** (6 primary keys, 10 foreign keys),
+verified in `information_schema.table_constraints`. Unity Catalog does not
+enforce them; they exist so Catalog Explorer renders the star schema and so the
+joins are documented for anyone reading the model cold.
+
+> **ERD screenshot:** still to add — needs a human in Catalog Explorer.
 
 ### Two traps this model exists to avoid
 
@@ -117,10 +124,14 @@ Measured on the loaded data:
 |---|---|---|
 | distinct customers | **96,096** | 99,441 |
 | phantom customers introduced | — | **+3,345** |
-| repeat-purchase rate | TBD (needs `fact_order`) | TBD |
+| repeat customers found | **2,997** | 0 |
+| **repeat-purchase rate** | **3.12%** | **0.00%** |
 
-3,345 people are counted twice or more by the naive key. Every one of them is a
-repeat customer that a `customer_id`-keyed model reports as brand new.
+Not understated — **destroyed**. The naive key reports that not one customer in
+99,441 ever ordered twice, and nothing errors while it does so. 3,345 people are
+counted two or more times, and every one of them is a repeat customer the model
+would classify as brand new. Average lifetime value would collapse to average
+order value (measured: $164.87 against 1.035 orders per customer).
 
 **2. Payment fan-out.** An Olist order carries N payment rows (installments,
 voucher + card splits). Measured: **103,886 payment rows across 99,440 orders
@@ -198,8 +209,17 @@ only ordering by `updated_at`.
 The dashboard reads these views, never the fact tables directly, so a model
 change does not break the dashboard.
 
-> **Dashboard screenshot:** TBD
-> **Genie space:** TBD — the curated questions and whether each resolved correctly
+All 13 views build and return data. Sample measured answers:
+
+| question | answer |
+|---|---|
+| top category by revenue | `health_beauty` — $1,437,666 (9.14% of total) |
+| worst delivery state | Maranhão — 21.1 days avg, **16.73% late** (750 orders) |
+| payment mix | credit card 76,505 orders, 3.51 avg installments, 97.12% completion |
+| repeat-purchase rate | 3.12% |
+
+> **Dashboard and Genie space: not built yet.** These are remaining work, not
+> missing screenshots — nothing is claimed about them.
 
 ---
 
@@ -221,7 +241,30 @@ Three distinct guarantees:
 Deterministic surrogate keys (hashes, not sequences) are what make (2) possible:
 rebuilding a dimension cannot renumber keys that facts already point at.
 
-> **Re-run proof:** TBD — `idempotency_check` output across two runs of the same `run_date`
+**Measured across two identical full-pipeline runs of `run_date = 2018-10-01`:**
+
+| gold table | run 1 | run 2 |
+|---|---|---|
+| `dim_customer` | 96,144 | **96,144** |
+| `dim_date` | 1,139 | **1,139** |
+| `dim_product` | 32,951 | **32,951** |
+| `dim_seller` | 3,095 | **3,095** |
+| `fact_order` | 99,441 | **99,441** |
+| `fact_order_item` | 112,650 | **112,650** |
+| `fact_payment` | 103,886 | **103,886** |
+
+Not one row count or measure sum moved. Two figures from `ops.pipeline_runs`
+make the mechanism visible rather than merely asserted:
+
+- **`bronze_ingest`: 0 rows read, 0 written** on the second run. `COPY INTO`
+  re-consumed nothing — file-level idempotency as a measurement.
+- **`cdc_apply`: 49 rows read, 0 written.** The change file was deliberately
+  replayed after already being applied; all 48 distinct keys classified
+  `unchanged`, including the 5 deletes, so no version was opened.
+
+What this does **not** prove: two runs wrong in identical ways both pass. It is a
+determinism guard, not a correctness proof — `v_reconciliation` and
+`v_scd2_integrity` cover that, and both are clean.
 
 ---
 
@@ -273,7 +316,17 @@ Restoration verified independently of the probe's own assertions:
 and `DESCRIBE HISTORY` shows `version 3 | RESTORE`, so the whole exercise is
 auditable after the fact.
 
-> **`ops.dq_results` screenshot:** TBD
+**`ops.dq_results` after a full run** — a table rather than a screenshot, so it
+stays greppable and diffable:
+
+| table | rule | severity | checked | failed | rate |
+|---|---|---|---|---|---|
+| `products` | `products.category_present` | warn | 32,951 | **610** | 1.85% |
+
+That single row is the whole argument for the `warn` severity. 610 products
+carry real revenue with no category; they load, they are counted, and nothing is
+dropped. Every `reject` rule reports 0 failures on real Olist data — which is
+why the probe above exists.
 
 ---
 
@@ -351,7 +404,23 @@ Windows needs a JDK plus `winutils.exe`/`HADOOP_HOME`, which is a time sink with
 no payoff here. `tests/conftest.py` reuses the Databricks session when present
 and builds a local one otherwise, so both paths work if you do have a JDK.
 
-> **pytest output screenshot:** TBD
+**Measured: `46 passed` in 36.6s**, run in-workspace via
+[`notebooks/99_run_tests.py`](notebooks/99_run_tests.py).
+
+| file | tests | covers |
+|---|---|---|
+| `test_scd2.py` | 19 | change classification, carry-forward resolution, replay safety |
+| `test_transforms.py` | 13 | cleaning, dedup ordering, DQ severity, ANSI-safe casts |
+| `test_config.py` | 7 | catalog resolution at call time, source-table registry |
+| `test_sql_files.py` | 7 | SQL statement splitting, incl. the real view files |
+
+The first in-workspace run found a **real production bug**: `parse_timestamps`
+used `to_timestamp`, whose docstring claimed unparseable input becomes NULL.
+Under ANSI mode — on by default on serverless — it *raises*, so one malformed
+date would have aborted `silver_clean` instead of nulling the value for a DQ
+rule to quarantine. `cast_numerics` had the identical flaw. Both now use
+`try_to_timestamp` / `try_cast`. Olist's clean timestamps had hidden it
+completely; only executing the suite surfaced it.
 
 ---
 

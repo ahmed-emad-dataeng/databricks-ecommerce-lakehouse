@@ -68,9 +68,20 @@ NUMERIC_CASTS: dict[str, dict[str, str]] = {
 
 
 def cast_numerics(df: DataFrame, table: str) -> DataFrame:
+    """Cast bronze's all-string columns to real numeric types.
+
+    Uses `try_cast`, not `cast`, for the same reason parse_timestamps uses
+    `try_to_timestamp`: serverless enables ANSI mode, where casting a
+    non-numeric string RAISES instead of yielding NULL. A bare cast would abort
+    the whole task on one bad value, when the intended behaviour is NULL plus a
+    DQ rule that quarantines the row -- and the NOT NULL rules already in
+    src/silver/dq.py are what catch it.
+    """
+    from pyspark.sql import functions as F
+
     for col, dtype in NUMERIC_CASTS.get(table, {}).items():
         if col in df.columns:
-            df = df.withColumn(col, df[col].cast(dtype))
+            df = df.withColumn(col, F.expr(f"try_cast(`{col}` AS {dtype})"))
     return df
 
 

@@ -201,3 +201,23 @@ def test_customer_segment_IS_as_of_filtered(spark):
     assert rows["early"]["order_count"] == 2
     # "late" ordered only after as_of, so it must not appear at all.
     assert "late" not in rows
+
+
+def test_cast_numerics_nulls_bad_values_instead_of_raising(spark):
+    """Same ANSI trap as parse_timestamps, in the numeric path: a bare
+    `cast('abc' AS INT)` raises under ANSI mode and would abort silver_clean on
+    one bad value, when the design is NULL plus a DQ rule that quarantines the
+    row."""
+    from src.silver.clean import cast_numerics
+
+    df = spark.createDataFrame(
+        [("o1", "1", "10.50"), ("o2", "not-a-number", "also-bad")],
+        "order_id string, order_item_id string, price string",
+    )
+    out = {r["order_id"]: r for r in cast_numerics(df, "order_items").collect()}
+
+    assert out["o1"]["order_item_id"] == 1
+    assert float(out["o1"]["price"]) == 10.50
+    # The whole point: bad input becomes NULL rather than killing the task.
+    assert out["o2"]["order_item_id"] is None
+    assert out["o2"]["price"] is None

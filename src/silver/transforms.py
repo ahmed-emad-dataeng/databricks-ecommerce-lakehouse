@@ -43,15 +43,28 @@ def normalise_strings(df: DataFrame, cols: tuple[str, ...] | list[str]) -> DataF
     return df
 
 
-def parse_timestamps(df: DataFrame, cols: tuple[str, ...] | list[str]) -> DataFrame:
-    """Cast Olist's 'yyyy-MM-dd HH:mm:ss' strings to real timestamps.
+TIMESTAMP_FORMAT = "yyyy-MM-dd HH:mm:ss"
 
-    Uses to_timestamp rather than a bare cast so unparseable values become NULL
-    instead of raising under ANSI mode.
+
+def parse_timestamps(df: DataFrame, cols: tuple[str, ...] | list[str]) -> DataFrame:
+    """Parse Olist's 'yyyy-MM-dd HH:mm:ss' strings into real timestamps.
+
+    Uses `try_to_timestamp`, NOT `to_timestamp`. Serverless runs with ANSI mode
+    enabled, where `to_timestamp` RAISES on unparseable input:
+
+        [CANNOT_PARSE_TIMESTAMP] Text 'not-a-date' could not be parsed
+
+    which would abort silver_clean on a single malformed date rather than
+    nulling the value and letting a DQ rule quarantine the row -- the exact
+    behaviour this layer exists to provide. An earlier version of this docstring
+    claimed to_timestamp already did that; it does not, and
+    test_parse_timestamps_nulls_unparseable_instead_of_raising is what proved it.
     """
     for c in cols:
         if c in df.columns:
-            df = df.withColumn(c, F.to_timestamp(F.col(c), "yyyy-MM-dd HH:mm:ss"))
+            df = df.withColumn(
+                c, F.try_to_timestamp(F.col(c), F.lit(TIMESTAMP_FORMAT))
+            )
     return df
 
 
