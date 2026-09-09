@@ -115,9 +115,13 @@ def classify_changes(
     """
     incoming_hashed = add_row_hash(incoming, tracked_cols)
 
+    already_deleted = (
+        F.col("is_deleted") if "is_deleted" in current.columns else F.lit(False)
+    )
     current_state = current.select(
         F.col(natural_key).alias("_cur_key"),
         F.col(ROW_HASH).alias("_cur_hash"),
+        F.coalesce(already_deleted, F.lit(False)).alias("_cur_deleted"),
     )
 
     joined = incoming_hashed.join(
@@ -133,15 +137,27 @@ def classify_changes(
         is_delete = F.lit(False)
 
     action = (
-        # A delete for a key we've never seen is a no-op, not a tombstone.
-        F.when(is_delete & F.col("_cur_key").isNotNull(), F.lit(DELETED))
+        # Re-deleting an already-deleted key is a no-op, not a second tombstone.
+        # Without this, replaying a change file appends one tombstone per run,
+        # dim_customer grows on every execution, and the idempotency check fails
+        # -- which is precisely the class of bug that check exists to catch.
+        F.when(
+            is_delete
+            & F.col("_cur_key").isNotNull()
+            & F.col("_cur_deleted"),
+            F.lit(UNCHANGED),
+        )
+        # A delete for a key we've never seen is also a no-op, not a tombstone.
+        .when(is_delete & F.col("_cur_key").isNotNull(), F.lit(DELETED))
         .when(is_delete, F.lit(UNCHANGED))
         .when(F.col("_cur_key").isNull(), F.lit(NEW))
         .when(F.col(ROW_HASH) != F.col("_cur_hash"), F.lit(CHANGED))
         .otherwise(F.lit(UNCHANGED))
     )
 
-    return joined.withColumn(ACTION, action).drop("_cur_key", "_cur_hash")
+    return joined.withColumn(ACTION, action).drop(
+        "_cur_key", "_cur_hash", "_cur_deleted"
+    )
 
 
 def build_new_versions(

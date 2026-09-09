@@ -10,20 +10,31 @@
 
 # COMMAND ----------
 
-import glob
-import os
-
 from src.ops.run_log import logged_task
+from src.ops.sql_files import load_view_statements
 
-view_files = sorted(glob.glob(os.path.join(os.getcwd(), "..", "sql", "views", "*.sql")))
+# Splitting is in src/ops/sql_files.py, not inline here, because naive
+# body.split(";") breaks on the prose semicolons in two of the view files --
+# see tests/test_sql_files.py.
+statements = load_view_statements(CATALOG)
 
 with logged_task(spark, "analytics_views", RUN_ID, RUN_DATE) as m:
-    for path in view_files:
-        with open(path, encoding="utf-8") as fh:
-            body = fh.read()
-        # Views are written against ${catalog}; substitute the target catalog.
-        for statement in body.replace("${catalog}", CATALOG).split(";"):
-            if statement.strip():
-                spark.sql(statement)
-        print(f"applied {os.path.basename(path)}")
-    m.details = {"views_applied": str(len(view_files))}
+    applied = []
+    for name, sql in statements:
+        spark.sql(sql)
+        applied.append(name)
+    files = sorted(set(applied))
+    print(f"applied {len(applied)} statements from {len(files)} files")
+    for f in files:
+        print(f"  {f}")
+    m.details = {"statements": str(len(applied)), "files": str(len(files))}
+
+# COMMAND ----------
+
+# MAGIC %md Smoke-test the views the dashboard will read.
+
+# COMMAND ----------
+
+display(spark.sql(f"SELECT * FROM {CATALOG}.gold.v_repeat_purchase_rate"))
+display(spark.sql(f"SELECT * FROM {CATALOG}.gold.v_fanout_demo"))
+display(spark.sql(f"SELECT * FROM {CATALOG}.gold.v_repeat_rate_key_comparison"))

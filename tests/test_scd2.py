@@ -288,3 +288,33 @@ def test_keys_to_close_works_without_effective_from(spark):
 
     assert "closed_at" not in closing.columns
     assert [r[NK] for r in closing.collect()] == ["c1"]
+
+
+def test_re_deleting_an_already_deleted_key_is_a_no_op(spark):
+    """Replay safety: without this, re-applying a change file appends a fresh
+    tombstone every run, dim_customer grows on each execution, and the
+    idempotency check fails."""
+    current = _current(spark, [("c1", "cairo", "new")]).withColumn(
+        "is_deleted", F.lit(True)
+    )
+    incoming = spark.createDataFrame([("c1", "cairo", "new", "D")], INCOMING_SCHEMA)
+
+    actions = {
+        r[NK]: r[ACTION]
+        for r in classify_changes(current, incoming, NK, TRACKED, op_col="op").collect()
+    }
+    assert actions == {"c1": UNCHANGED}
+
+
+def test_first_delete_of_a_live_key_still_tombstones(spark):
+    """The guard must not break the normal path."""
+    current = _current(spark, [("c1", "cairo", "new")]).withColumn(
+        "is_deleted", F.lit(False)
+    )
+    incoming = spark.createDataFrame([("c1", "cairo", "new", "D")], INCOMING_SCHEMA)
+
+    actions = {
+        r[NK]: r[ACTION]
+        for r in classify_changes(current, incoming, NK, TRACKED, op_col="op").collect()
+    }
+    assert actions == {"c1": DELETED}
