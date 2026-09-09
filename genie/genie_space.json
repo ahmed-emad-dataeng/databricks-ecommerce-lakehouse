@@ -1,0 +1,143 @@
+{
+  "version": 2,
+  "config": {
+    "sample_questions": [
+      { "id": "10000000000000000000000000000001", "question": ["Which product categories generate the most revenue?"] },
+      { "id": "10000000000000000000000000000002", "question": ["What is our repeat-purchase rate?"] },
+      { "id": "10000000000000000000000000000003", "question": ["Which states have the worst late-delivery rate?"] },
+      { "id": "10000000000000000000000000000004", "question": ["How has monthly revenue changed over time?"] },
+      { "id": "10000000000000000000000000000005", "question": ["Which sellers earned the most revenue, and from which categories?"] },
+      { "id": "10000000000000000000000000000006", "question": ["Do customers who pay with more installments spend more per order?"] }
+    ]
+  },
+  "data_sources": {
+    "tables": [
+      { "identifier": "ecommerce_dev.gold.dim_customer" },
+      { "identifier": "ecommerce_dev.gold.dim_date" },
+      { "identifier": "ecommerce_dev.gold.dim_product" },
+      { "identifier": "ecommerce_dev.gold.dim_seller" },
+      { "identifier": "ecommerce_dev.gold.fact_order" },
+      { "identifier": "ecommerce_dev.gold.fact_order_item" },
+      { "identifier": "ecommerce_dev.gold.fact_payment" }
+    ]
+  },
+  "instructions": {
+    "example_question_sqls": [
+      {
+        "id": "20000000000000000000000000000001",
+        "question": ["Which product categories generate the most revenue?"],
+        "sql": [
+          "-- Revenue lives at ITEM grain. Never sum order_total per item row.\n",
+          "SELECT dp.category,\n",
+          "       round(sum(foi.item_revenue), 2) AS revenue,\n",
+          "       count(DISTINCT foi.order_id)    AS orders\n",
+          "FROM ecommerce_dev.gold.fact_order_item foi\n",
+          "JOIN ecommerce_dev.gold.dim_product dp ON foi.product_sk = dp.product_sk\n",
+          "WHERE NOT foi.is_cancelled\n",
+          "GROUP BY dp.category\n",
+          "ORDER BY revenue DESC"
+        ]
+      },
+      {
+        "id": "20000000000000000000000000000002",
+        "question": ["What is our repeat-purchase rate?"],
+        "sql": [
+          "-- Customer identity is customer_unique_id. customer_id is per-ORDER and\n",
+          "-- counting it makes every customer look new (rate becomes 0.00%).\n",
+          "WITH per_customer AS (\n",
+          "  SELECT customer_unique_id, count(DISTINCT order_id) AS orders\n",
+          "  FROM ecommerce_dev.gold.fact_order\n",
+          "  WHERE customer_unique_id IS NOT NULL\n",
+          "  GROUP BY customer_unique_id\n",
+          ")\n",
+          "SELECT count(*) AS customers,\n",
+          "       count_if(orders > 1) AS repeat_customers,\n",
+          "       round(100.0 * count_if(orders > 1) / count(*), 2) AS repeat_rate_pct\n",
+          "FROM per_customer"
+        ]
+      },
+      {
+        "id": "20000000000000000000000000000003",
+        "question": ["Which states have the worst late-delivery rate?"],
+        "sql": [
+          "-- A rate is a ratio of two SUMS, never a mean of ratios. Averaging\n",
+          "-- per-month percentages weights a 40-order month like a 4,000-order one.\n",
+          "SELECT dc.customer_state,\n",
+          "       count(*)                                             AS orders,\n",
+          "       count_if(fo.is_late)                                 AS late_orders,\n",
+          "       round(100.0 * count_if(fo.is_late) / count(*), 2)    AS late_rate_pct,\n",
+          "       round(avg(fo.delivery_days), 1)                      AS avg_delivery_days\n",
+          "FROM ecommerce_dev.gold.fact_order fo\n",
+          "JOIN ecommerce_dev.gold.dim_customer dc ON fo.customer_sk = dc.customer_sk\n",
+          "WHERE fo.is_delivered\n",
+          "GROUP BY dc.customer_state\n",
+          "HAVING count(*) >= 500\n",
+          "ORDER BY late_rate_pct DESC"
+        ]
+      },
+      {
+        "id": "20000000000000000000000000000004",
+        "question": ["How do payment methods compare on order completion?"],
+        "sql": [
+          "-- fact_payment is at PAYMENT grain: an order can have several rows.\n",
+          "-- Count orders with DISTINCT order_id, never count(*).\n",
+          "SELECT fp.payment_type,\n",
+          "       count(DISTINCT fp.order_id)          AS orders,\n",
+          "       round(sum(fp.payment_value), 2)      AS total_paid,\n",
+          "       round(avg(fp.payment_installments), 2) AS avg_installments,\n",
+          "       round(100.0 * count(DISTINCT CASE WHEN fp.order_completed THEN fp.order_id END)\n",
+          "             / count(DISTINCT fp.order_id), 2) AS completion_rate_pct\n",
+          "FROM ecommerce_dev.gold.fact_payment fp\n",
+          "GROUP BY fp.payment_type\n",
+          "ORDER BY total_paid DESC"
+        ]
+      },
+      {
+        "id": "20000000000000000000000000000005",
+        "question": ["What city was a customer in when they placed a given order?"],
+        "sql": [
+          "-- dim_customer is SCD Type 2. Joining on customer_sk resolves the version\n",
+          "-- that was current AT PURCHASE TIME. Joining on customer_unique_id instead\n",
+          "-- would silently restate history with today's attributes.\n",
+          "SELECT fo.order_id,\n",
+          "       fo.order_purchase_timestamp,\n",
+          "       hist.customer_city AS city_at_order_time,\n",
+          "       now.customer_city  AS city_today\n",
+          "FROM ecommerce_dev.gold.fact_order fo\n",
+          "JOIN ecommerce_dev.gold.dim_customer hist ON fo.customer_sk = hist.customer_sk\n",
+          "JOIN ecommerce_dev.gold.dim_customer now\n",
+          "  ON fo.customer_unique_id = now.customer_unique_id\n",
+          " AND now.is_current AND NOT now.is_deleted\n",
+          "WHERE hist.customer_city <> now.customer_city"
+        ]
+      }
+    ],
+    "text_instructions": [
+      {
+        "id": "30000000000000000000000000000001",
+        "content": [
+          "This is a Kimball star schema over the Olist Brazilian e-commerce dataset. THREE FACT TABLES AT THREE DIFFERENT GRAINS - picking the wrong one is the most common source of wrong answers.\n",
+          "\n",
+          "GRAIN GUIDE:\n",
+          "- fact_order_item: one row per PRODUCT LINE within an order. Use for revenue, category and product questions. Revenue column is item_revenue (price + freight).\n",
+          "- fact_order: one row per ORDER. Use for order counts, average order value, delivery timing and cancellation questions. Revenue column is order_total.\n",
+          "- fact_payment: one row per PAYMENT RECORD. An order can have several (installments, voucher + card). Use only for payment-method questions.\n",
+          "\n",
+          "NEVER join fact_payment to fact_order and sum order_total. Orders average 1.045 payment records, so this inflates revenue by about 4.5% - a plausible-looking wrong number rather than an obvious one. When counting orders from fact_payment, always use count(DISTINCT order_id).\n",
+          "\n",
+          "CUSTOMER IDENTITY: customer_unique_id identifies a person. customer_id is per-ORDER - Olist issues a new one for every order - so grouping by customer_id makes every customer look brand new and drives repeat-purchase rate to 0.00%. Always use customer_unique_id for anything about customers, retention or lifetime value.\n",
+          "\n",
+          "dim_customer is SCD TYPE 2: one row per customer VERSION, not per customer. For CURRENT customer attributes filter is_current AND NOT is_deleted. For what a customer looked like AT THE TIME OF AN ORDER, join fact tables on customer_sk, which already points at the correct historical version. Never join facts to dim_customer on customer_unique_id alone - it multiplies rows and restates history.\n",
+          "\n",
+          "RATES AND AVERAGES: a rate is a ratio of two sums, never a mean of ratios. Compute late-delivery rate as count_if(is_late) / count(*), not as an average of per-period percentages, which weights small periods equally with large ones.\n",
+          "\n",
+          "EXCLUSIONS: exclude cancelled rows from revenue with NOT is_cancelled. delivery_days is NULL for orders that were never delivered, so AVG(delivery_days) correctly ignores open orders - do not coalesce it to zero. For delivery questions filter is_delivered.\n",
+          "\n",
+          "DATE HANDLING: facts carry order_date_sk as an INT in yyyyMMdd form; join to dim_date on date_sk for month, quarter or day-name grouping. dim_date extends a year past the last order, so filter by fact rows rather than by dim_date alone.\n",
+          "\n",
+          "DATA RANGE: orders run from September 2016 to 17 October 2018. The first and last months are partial, so exclude them when showing trends or they read as a collapse that never happened."
+        ]
+      }
+    ]
+  }
+}

@@ -27,9 +27,11 @@ that shaped the design are documented rather than hidden — see
 > comparing gold fingerprints across two identical runs. Test suite: **46 passed**.
 > Every number in this README is measured, not estimated.
 >
-> **Remaining work:** the AI/BI dashboard and the Genie space are not built yet
-> (not "built but unphotographed"), and the ERD needs a Catalog Explorer
-> screenshot — the 16 informational constraints it renders from are applied.
+> **Consumption layer is live**: an AI/BI dashboard (10 widgets) and a Genie
+> space, both defined as code in this repo and both verified against the data.
+>
+> **Remaining:** the ERD needs a Catalog Explorer screenshot — the 16
+> informational constraints it renders from are applied.
 
 ---
 
@@ -243,7 +245,26 @@ Two deliberate choices visible in the JSON:
   carries a comment saying so, because it is the kind of thing that gets
   "simplified" back into a bug.
 
-> **Genie space: not built yet.** Remaining work, not a missing screenshot.
+### Genie space — the model tested by asking it questions
+
+[`genie/genie_space.json`](genie/genie_space.json) is committed and deployed with
+`databricks genie create-space`. It sits on the **star schema itself** — 3 facts,
+4 dimensions — not on the views, because Genie joining facts to dimensions
+correctly is the evidence the model is well-named. Its single
+`text_instructions` entry encodes the grain rules and both traps.
+
+**Verified by asking it, then checking the SQL it wrote:**
+
+| question | did it get it right? |
+|---|---|
+| *"What is our repeat-purchase rate?"* | **Yes** — grouped by `customer_unique_id`, returned 96,096 customers / 2,997 repeat / **3.12%**, matching ground truth exactly. Had it reached for `customer_id` the answer would have been 0.00%. |
+| *"Total revenue broken down by payment method?"* | **Yes** — stayed inside `fact_payment` and summed `payment_value`. It did **not** join to `fact_order` and sum `order_total`, which is the 4.5% fan-out error the question invites. |
+
+The second is the one worth reading twice: revenue-by-payment-method is precisely
+the question whose obvious join is wrong, and the space declined it.
+
+It also improved on the SQL I taught it, substituting `try_divide` for plain
+division in the rate calculation.
 
 ---
 
@@ -387,6 +408,7 @@ src/
     idempotency.py       fingerprint + cross-run comparison
 sql/views/               13 documented analytical + reconciliation views
 dashboards/              AI/BI dashboard as code (.lvdash.json)
+genie/                   Genie space as code (serialized_space JSON)
 notebooks/               thin job entrypoints (logic lives in src/)
 tests/                   19 tests; 3 pin the SCD2 transitions
 resources/               Lakeflow Job as YAML
