@@ -270,7 +270,8 @@ determinism guard, not a correctness proof — `v_reconciliation` and
 
 ## Data quality
 
-24 rules across 7 tables, defined as data in `src/silver/dq.py`. One definition
+**23 rules** (20 `reject`, 3 `warn`) across 7 tables, defined as data in
+`src/silver/dq.py`. One definition
 drives the clean/quarantine split, the per-run counts in `ops.dq_results`, and
 this table.
 
