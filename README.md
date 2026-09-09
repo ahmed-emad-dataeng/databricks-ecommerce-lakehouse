@@ -8,7 +8,7 @@ The point of the project is not the medallion layers. It is this:
 
 ```
 eight operational entities
-   → incremental ingestion (Auto Loader, file-idempotent)
+   → incremental ingestion (COPY INTO, file-idempotent)
    → data quality + de-duplication (rules, quarantine, audit)
    → CDC (generated change feed: inserts, updates, deletes)
    → SCD Type 2 (point-in-time correct customer history)
@@ -20,10 +20,14 @@ Everything runs on **Databricks Free Edition at $0**. The platform constraints
 that shaped the design are documented rather than hidden — see
 [Free Edition limitations](#free-edition-limitations-and-what-they-changed).
 
-> **Status:** scaffolding and pipeline code complete; not yet executed
-> end-to-end against a live workspace. Screenshots and measured results are
-> marked `TBD` below and will be filled in from the first full run rather than
-> estimated.
+> **Status — verified against a live Free Edition workspace:**
+> `bronze_ingest`, `silver_clean` and `gold_dims` all run green. 550,759 rows
+> loaded across 8 bronze tables, 8 silver tables, 7 quarantine tables and 6 gold
+> dimensions. Numbers below marked measured are from that run.
+>
+> **Not yet run:** the three fact tables, the CDC/SCD2 path, the analytical
+> views, the AI/BI dashboard, the Genie space, and the end-to-end idempotency
+> check. Those remain `TBD` and are not claimed.
 
 ---
 
@@ -50,7 +54,7 @@ flowchart TB
 
     A --> C
     B --> C
-    C -->|"Auto Loader<br/>Trigger.AvailableNow"| D
+    C -->|"COPY INTO<br/>file-idempotent"| D
     D -->|PySpark| E
     E -->|rejected| Q
     E -->|"MERGE · SCD2"| F
@@ -107,16 +111,23 @@ only `customer_unique_id` is stable across orders. Key `dim_customer` on
 to ~0%, LTV equals AOV, and SCD2 never fires. Nothing errors; every number is
 just wrong. `gold.v_repeat_rate_key_comparison` computes the metric both ways.
 
-| | correct key | naive key |
+Measured on the loaded data:
+
+| | correct key (`customer_unique_id`) | naive key (`customer_id`) |
 |---|---|---|
-| customers | TBD | TBD |
-| repeat-purchase rate | TBD | TBD |
+| distinct customers | **96,096** | 99,441 |
+| phantom customers introduced | — | **+3,345** |
+| repeat-purchase rate | TBD (needs `fact_order`) | TBD |
+
+3,345 people are counted twice or more by the naive key. Every one of them is a
+repeat customer that a `customer_id`-keyed model reports as brand new.
 
 **2. Payment fan-out.** An Olist order carries N payment rows (installments,
-voucher + card splits). Joining payments onto order grain multiplies revenue by
-the payment count — an inflation of a few percent, which is more dangerous than
-a factor of ten because it looks plausible. `gold.v_fanout_demo` shows correct
-and inflated revenue side by side.
+voucher + card splits). Measured: **103,886 payment rows across 99,440 orders
+= 1.0447 payments per order.** Joining payments onto order grain therefore
+inflates revenue by **~4.5%** — more dangerous than a factor of ten, because a
+number that is 4.5% wrong looks plausible and ships. `gold.v_fanout_demo` shows
+correct and inflated revenue side by side.
 
 ### The payoff query
 
@@ -154,8 +165,9 @@ change does not break the dashboard.
 "What happens if the job runs twice?" is answered by a task, not a claim.
 Three distinct guarantees:
 
-1. **File-level** — Auto Loader / `COPY INTO` track consumed files; nothing is
-   ingested twice.
+1. **File-level** — `COPY INTO` tracks consumed files; nothing is ingested
+   twice. A re-run reports **0 inserted rows**, which is the guarantee showing
+   up as a measurement rather than a claim.
 2. **Write-level** — silver and gold are deterministic rebuilds of the layer
    below (`CREATE OR REPLACE`, `MERGE` on business keys). SCD2 is the exception
    and handles it by classifying replayed rows as `unchanged`.
@@ -179,7 +191,7 @@ this table.
 | Severity | Behaviour | Example |
 |---|---|---|
 | `reject` | row diverted to `silver.quarantine_<table>` | `order_items.price_non_negative` |
-| `warn` | row loads, failure still counted | `products.category_present` — ~600 products have no category but carry real revenue; dropping them would understate totals |
+| `warn` | row loads, failure still counted | `products.category_present` — **measured: 610 of 32,951 products (1.85%)** have no category but carry real revenue; dropping them would understate totals |
 
 Two details that matter more than the rule count:
 
@@ -188,7 +200,37 @@ Two details that matter more than the rule count:
 - **`warn` exists because Olist is real data.** Deliveries recorded before
   approval do occur; that is worth surfacing, not worth dropping the order over.
 
-> **Quarantine + `ops.dq_results` screenshot:** TBD
+**No `reject` rule fires on real Olist data** — it is clean enough that every
+`quarantine_*` table is empty after a normal load. An empty quarantine table
+looks identical whether routing works or is silently broken, so
+[`notebooks/98_dq_probe.py`](notebooks/98_dq_probe.py) injects a known-bad batch,
+runs the real `clean_all()` path, asserts all five reject rules fired (including
+a NULL-price row, which a naive filter would pass), then restores bronze via
+Delta time travel and asserts the lakehouse matches its pre-probe baseline.
+
+**Probe result — measured, and independently re-verified from outside the probe:**
+
+| rule | rows failed | expected |
+|---|---|---|
+| `order_items.price_non_negative` | **3** | 3 (negative, **NULL**, and the two-rule row) |
+| `order_items.freight_non_negative` | **2** | 2 |
+| `order_items.order_id_not_null` | **1** | 1 |
+| `order_items.product_id_not_null` | **1** | 1 |
+| `order_items.item_sequence_positive` | **1** | 1 |
+
+8 rule-failures across **7 quarantined rows** (one row breaks two rules), out of
+`rows_checked = 112,658` — the 112,650 real rows plus 8 probe rows. The clean
+control row reached silver. `price_non_negative` counting **3** rather than 2 is
+the important number: it includes the NULL-price row, proving a NULL predicate
+result is treated as a failure rather than passing a naive filter.
+
+Restoration verified independently of the probe's own assertions:
+`bronze.order_items` 112,650, `silver.order_items` 112,650,
+`quarantine_order_items` 0 — all back to baseline, zero synthetic rows anywhere,
+and `DESCRIBE HISTORY` shows `version 3 | RESTORE`, so the whole exercise is
+auditable after the fact.
+
+> **`ops.dq_results` screenshot:** TBD
 
 ---
 
@@ -211,7 +253,7 @@ failing silently is worse than no logging.
 src/
   config.py              source-table registry driving every layer's loop
   generator/             deterministic CDC + event generator (pure Python)
-  bronze/ingest.py       Auto Loader, with a COPY INTO fallback
+  bronze/ingest.py       COPY INTO (active); Auto Loader kept, does not work here
   silver/
     transforms.py        PURE DataFrame -> DataFrame functions (all unit-tested)
     dq.py                rule registry
@@ -282,6 +324,7 @@ because knowing where a platform stops is part of knowing the platform.
 | `cache()` / `persist()` blocked | `apply_scd2` materialises to a staging table instead of caching a thrice-scanned DataFrame. |
 | Only 6 Spark configs settable | `autoBroadcastJoinThreshold` and AQE cannot be changed, so a broadcast-vs-sort-merge benchmark is not a controlled experiment. Dropped rather than faked. |
 | `Trigger.AvailableNow()` only | Streaming here is **micro-batch incremental ingestion**, not real-time. Named that way throughout. |
+| **Auto Loader cannot start a streaming query at all** | Hit in practice, not predicted: `SPARK_CONNECT_ILLEGAL_STATE.…OPERATION_STATUS_MISMATCH` on the first table. `_schemas/customers` *was* written to the volume first, so volume writes and schema inference work — the fault is Spark Connect's streaming-query lifecycle, and serverless is Spark Connect only. Switched to `COPY INTO`, which was already coded as the fallback and gives identical file-level idempotency with no checkpoint. |
 | Max 5 concurrent job tasks | Linear DAG. |
 | One active pipeline per type | Both Lakeflow extensions share one pipeline. |
 | One workspace / metastore / user | Governance shown via PK/FK constraints, comments and lineage — not `GRANT`s to invented groups. |

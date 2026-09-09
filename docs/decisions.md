@@ -190,6 +190,44 @@ Not preferences. These are platform limits, verified against current docs.
 
 ---
 
+## 7a. `COPY INTO` instead of Auto Loader — forced, not preferred
+
+Auto Loader was the intended ingestion path. It does not work on Free Edition
+serverless. Starting the streaming query fails with:
+
+```
+SPARK_CONNECT_ILLEGAL_STATE.STATE_CONSISTENCY_EXECUTION_STATE_TRANSITION_
+INVALID_OPERATION_STATUS_MISMATCH
+operationId <id> with status Started is not within statuses
+Finished, Failed, Canceled for event Closed
+```
+
+**What the diagnosis ruled out.** The documented risk going in was Auto Loader
+checkpoints in a Unity Catalog volume. That was not the cause: `_schemas/customers`
+*was* written to the volume before the failure, so volume writes and schema
+inference both work. It also failed on the *first* table, so it is not an
+accumulation problem across eight sequential streams. The fault is in Spark
+Connect's streaming-query lifecycle, and serverless offers no non-Connect
+transport — so there is no configuration that fixes it.
+
+**Why the switch costs nothing that matters.** `COPY INTO` records which files a
+target table has already consumed and skips them on re-run, which is the same
+file-level idempotency guarantee Auto Loader provides and the only property the
+pipeline actually depends on. What is genuinely lost: the rescued-data column and
+schema-evolution modes. Bronze is all-string with `mergeSchema`, so neither was
+load-bearing here.
+
+**An unexpected improvement.** `COPY INTO` returns `num_inserted_rows`, so the
+run log records rows actually consumed rather than an inferred before/after
+delta. A re-run reports **0 inserted rows** — the idempotency guarantee as a
+measurement instead of a claim. The forced path produced the better metric.
+
+The Auto Loader implementation stays in `src/bronze/ingest.py` behind
+`INGEST_MODE`, with the failure recorded next to it, so the finding is
+reproducible rather than folklore.
+
+---
+
 ## 8. Bronze stays all-string
 
 Bronze columns are ingested as strings with `inferColumnTypes` off, and typing

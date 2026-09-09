@@ -104,11 +104,27 @@ def clean_table(
     return clean, quarantined, counts
 
 
-def clean_all(spark: SparkSession, run_id: str, run_date: str) -> dict[str, int]:
-    """Build every silver table, quarantine failures, record DQ results."""
-    written: dict[str, int] = {}
+def clean_all(
+    spark: SparkSession,
+    run_id: str,
+    run_date: str,
+    tables: list[str] | None = None,
+) -> dict[str, int]:
+    """Build silver tables, quarantine failures, record DQ results.
 
-    for table in SOURCE_TABLES:
+    `tables` restricts the run to named tables. Used by the DQ probe
+    (notebooks/98_dq_probe.py) so it exercises this exact code path rather than
+    a reimplementation of it, and useful for re-running a single table after a
+    fix without reprocessing all eight.
+    """
+    written: dict[str, int] = {}
+    selected = [t for t in SOURCE_TABLES if tables is None or t.name in tables]
+    if tables:
+        unknown = set(tables) - {t.name for t in SOURCE_TABLES}
+        if unknown:
+            raise ValueError(f"unknown table(s): {sorted(unknown)}")
+
+    for table in selected:
         clean, quarantined, failure_counts = clean_table(spark, table)
         rules = rules_for(table.name)
 
