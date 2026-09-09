@@ -36,7 +36,39 @@ from src.config import (
     path_schemas,
 )
 
-INGEST_MODE = "auto_loader"  # or "copy_into"
+# "copy_into" or "auto_loader".
+#
+# COPY INTO is the ACTIVE path. Auto Loader was tried first and failed on Free
+# Edition serverless when starting the streaming query:
+#
+#   SPARK_CONNECT_ILLEGAL_STATE.STATE_CONSISTENCY_EXECUTION_STATE_TRANSITION_
+#   INVALID_OPERATION_STATUS_MISMATCH -- operationId <id> with status Started is
+#   not within statuses Finished, Failed, Canceled for event Closed
+#
+# It failed on the first table, and `_schemas/customers` WAS created in the
+# volume beforehand -- so volume writes and schema inference both work, and the
+# fault is in Spark Connect's streaming-query lifecycle, not the checkpoint
+# location. Serverless is Spark Connect only, so there is no non-Connect path.
+#
+# COPY INTO gives the same file-level idempotency (Databricks records which
+# files a target has consumed) with no streaming query and no checkpoint, so the
+# incremental-ingestion property the pipeline depends on is unchanged.
+INGEST_MODE = "copy_into"
+
+
+def _row_count_or_zero(spark, target: str) -> int:
+    """Row count, tolerating a Delta table that has no columns yet.
+
+    `CREATE TABLE IF NOT EXISTS <name>` makes a columnless table, and reading one
+    raises DELTA_READ_TABLE_WITHOUT_COLUMNS until something writes to it with
+    mergeSchema. That is a legitimate pre-load state, not an error.
+    """
+    if not spark.catalog.tableExists(target):
+        return 0
+    try:
+        return spark.table(target).count()
+    except Exception:
+        return 0
 
 
 def _format_options(table: SourceTable) -> str:
@@ -70,6 +102,11 @@ def ingest_auto_loader(spark: SparkSession, table: SourceTable, batch_id: str) -
         .load(f"{path_olist()}/{table.source_file}")
     )
 
+    # Counted from the table, not from query.recentProgress: on Spark Connect
+    # the operation handle is closed once awaitTermination returns, so reading
+    # progress off it afterwards is unreliable.
+    before = _row_count_or_zero(spark, target)
+
     query = (
         _with_provenance(stream, batch_id)
         .writeStream.option(
@@ -81,8 +118,7 @@ def ingest_auto_loader(spark: SparkSession, table: SourceTable, batch_id: str) -
     )
     query.awaitTermination()
 
-    progress = query.recentProgress
-    return int(sum(p.get("numInputRows", 0) for p in progress))
+    return spark.table(target).count() - before
 
 
 def ingest_copy_into(spark: SparkSession, table: SourceTable, batch_id: str) -> int:
@@ -94,8 +130,10 @@ def ingest_copy_into(spark: SparkSession, table: SourceTable, batch_id: str) -> 
     target = fqn(SCHEMA_BRONZE, table.name)
     spark.sql(f"CREATE TABLE IF NOT EXISTS {target}")
 
-    before = spark.table(target).count() if spark.catalog.tableExists(target) else 0
-    spark.sql(f"""
+    # COPY INTO reports its own metrics, which beats a before/after count: on a
+    # re-run it returns 0 inserted rows, which is direct evidence of the
+    # file-level idempotency guarantee rather than an inferred delta.
+    result = spark.sql(f"""
         COPY INTO {target}
         FROM (
           SELECT *,
@@ -108,7 +146,12 @@ def ingest_copy_into(spark: SparkSession, table: SourceTable, batch_id: str) -> 
         FORMAT_OPTIONS ({_format_options(table)})
         COPY_OPTIONS ('mergeSchema' = 'true')
     """)
-    return spark.table(target).count() - before
+
+    row = result.collect()[0].asDict()
+    for key in ("num_inserted_rows", "num_affected_rows"):
+        if key in row and row[key] is not None:
+            return int(row[key])
+    return _row_count_or_zero(spark, target)
 
 
 def ingest_table(spark: SparkSession, table: SourceTable, batch_id: str) -> int:

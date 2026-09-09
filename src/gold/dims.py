@@ -205,7 +205,12 @@ def seed_dim_customer(spark: SparkSession, as_of: str) -> int:
                 )
             ),
         )
-        .select(*[f.name for f in spark.table(dim_customer_table()).schema.fields])
+        # Cast every column to the DDL's declared type, don't just name-select.
+        # lifetime_value is a sum of sums, which Spark widens to ~decimal(31,2)
+        # against a DECIMAL(12,2) column; append-time schema enforcement rejects
+        # that. Casting to the target schema also keeps the two write paths
+        # (this seed and the SCD2 merge) structurally identical.
+        .transform(lambda df: scd2.conform_to_table(spark, df, dim_customer_table()))
         .write.mode("append")
         .saveAsTable(dim_customer_table())
     )

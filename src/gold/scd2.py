@@ -26,6 +26,22 @@ UNCHANGED = "unchanged"
 DELETED = "deleted"
 
 
+def conform_to_table(spark, df: DataFrame, table: str) -> DataFrame:
+    """Project `df` onto `table`'s columns, cast to its declared types.
+
+    Selecting by name alone is not enough: computed columns routinely carry
+    wider types than the DDL declares (a sum of DECIMAL(10,2) widens well past
+    DECIMAL(12,2); CSV-derived values arrive as strings), and Delta's
+    append-time schema enforcement rejects the mismatch. Casting explicitly
+    makes every write match the contract in the DDL.
+    """
+    fields = spark.table(table).schema.fields
+    missing = {f.name for f in fields} - set(df.columns)
+    if missing:
+        raise ValueError(f"{table}: source frame is missing {sorted(missing)}")
+    return df.select(*[F.col(f.name).cast(f.dataType).alias(f.name) for f in fields])
+
+
 def add_row_hash(df: DataFrame, tracked_cols: tuple[str, ...]) -> DataFrame:
     """Hash the tracked attributes so change detection is one comparison.
 
@@ -190,6 +206,8 @@ def apply_scd2(
                 )
             ),
         )
-        with_sk.write.mode("append").saveAsTable(target_table)
+        conform_to_table(spark, with_sk, target_table).write.mode(
+            "append"
+        ).saveAsTable(target_table)
 
     return counts
